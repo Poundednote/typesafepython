@@ -14,15 +14,41 @@ enum class TokenType {
     newline,
     open_paren,
     closed_paren,
+    assign,
+    type_annot,
+    colon,
     comma,
     open_quote,
     close_quote,
+    root,
 
+    // Math
+    addition,
+    subtraction,
+    multiplication,
+    division,
+    floor_div,
+    exponentiation,
+    remainder,
 };
 
 struct Token {
     TokenType type;
-    std::optional<std::string> value;
+    std::string value;
+};
+
+enum class StaticTypes {
+};
+
+struct TypedIdentifier {
+    StaticTypes type;
+    char value[76];
+};
+
+struct ASTNode {
+    Token token;
+    ASTNode *left;
+    ASTNode *right;
 };
 
 void tokenise_expr(const std::string input, std::vector<Token> &tokens) {
@@ -53,61 +79,128 @@ void tokenise_expr(const std::string input, std::vector<Token> &tokens) {
             --i;
         }
 
-        else if (input[i] == '(') {
-            {
-                Token token = {.type = TokenType::open_paren, .value = std::nullopt};
-                tokens.push_back(token);
-            }
+        switch (input[i]) {
+            case '(': {
+                Token open_paren = {.type = TokenType::open_paren, .value = "("};
+                tokens.push_back(open_paren);
 
-            int open_paren_index = i;
-            while (input[i] != ')') {
-                ++i;
-            }
+                int open_paren_index = i;
+                while (input[i] != ')') {
+                    ++i;
+                }
 
-            tokenise_expr(input.substr(open_paren_index+1, i-1-open_paren_index), tokens);
-            Token closed_parenthesis = {.type = TokenType::closed_paren, .value = std::nullopt};
-            tokens.push_back(closed_parenthesis);
-        }
+                tokenise_expr(input.substr(open_paren_index+1, i-1-open_paren_index), tokens);
+                Token closed_parenthesis = {.type = TokenType::closed_paren, .value = ")"};
+                tokens.push_back(closed_parenthesis);
+            } break;
 
-        else if (input[i] == '"') {
-            {
-                Token open_quote = {.type = TokenType::open_quote, .value = std::nullopt};
+            case '"': {
+                Token open_quote = {.type = TokenType::open_quote, .value = "\""};
                 tokens.push_back(open_quote);
-            }
+                ++i;
+                while (input[i] != '"') {
+                    buffer.push_back(input[i++]);
+                }
 
-            ++i;
-            while (input[i] != '"') {
-                buffer.push_back(input[i++]);
-            }
+                Token string = {.type = TokenType::string_lit, .value = buffer};
+                tokens.push_back(string);
+                buffer.clear();
 
-            Token string = {.type = TokenType::string_lit, .value = buffer};
-            tokens.push_back(string);
-            buffer.clear();
+                Token close_quote = {.type = TokenType::close_quote, .value = "\""};
+                tokens.push_back(close_quote);
+            } break;
 
-            Token close_quote = {.type = TokenType::close_quote, .value = std::nullopt};
-            tokens.push_back(close_quote);
-        }
+            case ',': {
+                Token comma = {.type = TokenType::comma, .value = ","};
+                tokens.push_back(comma);
 
-        else if (input[i] == ',') {
-            Token comma = {.type = TokenType::comma, .value = std::nullopt};
-            tokens.push_back(comma);
-        }
+            } break;
 
-        else if (input[i] == '\n') {
-            Token newline = {.type = TokenType::newline, .value = std::nullopt};
-            tokens.push_back(newline);
-        }
+            case ':': {
+                Token colon = {.type = TokenType::colon, .value = ":"};
+                tokens.push_back(colon);
+                i += 2;
+                while (input[i] != ' ') {
+                    buffer.push_back(input[i++]);
+                }
+                Token type_annot = {.type = TokenType::type_annot, .value = buffer};
+                tokens.push_back(type_annot);
+            } break;
 
-        else if (std::isspace(input[i])) {
-            if (!buffer.empty()) {
-              Token identifier = {.type = TokenType::identifier, .value = buffer};
-              buffer.clear();
-            }
-            continue;
+            case '=': {
+                Token assign = {.type = TokenType::assign, .value = "="};
+                tokens.push_back(assign);
+            } break;
+
+            case '\n': {
+                Token newline = {.type = TokenType::newline, .value = "\n"};
+                tokens.push_back(newline);
+            } break;
+
+
+            case '+': {
+                Token addition = {.type = TokenType::addition, .value = "+"};
+                tokens.push_back(addition);
+            } break;
+
+            case '-': {
+                Token subtraction = {.type = TokenType::subtraction, .value = "-"};
+                tokens.push_back(subtraction);
+            } break;
+
+            case '*': {
+                if (input [i+1] == '*') {
+                    Token exponentiation = {.type = TokenType::exponentiation, .value = "**"};
+                    tokens.push_back(exponentiation);
+                }
+
+                Token multiplication = {.type = TokenType::multiplication, .value = "*"};
+                tokens.push_back(multiplication);
+            } break;
+
+            case '/': {
+                if (input[i+1] == '/') {
+                    Token floor_div = {.type = TokenType::floor_div, .value = "//"};
+                    tokens.push_back(floor_div);
+                    break;
+                }
+
+                Token division = {.type = TokenType::division, .value = "/"};
+                tokens.push_back(division);
+            } break;
+
+            case ' ': {
+
+                while(input[++i] == ' ') {
+                    ++i;
+                }
+                --i;
+            } break;
         }
     }
 
     return;
+}
+
+ASTNode *build_parse_tree(const std::vector<Token> &tokens, ASTNode *root) {
+    for (int i = 0; i < tokens.size(); ++i) {
+        switch (tokens[i].type) {
+            case TokenType::assign: {
+                ASTNode *assignment = new ASTNode({.token = tokens[i], .left = {}, .right = {}});
+                if (tokens[i - 2].type != TokenType::colon) {
+                    std::cerr << "Expected type annotation before assignment";
+                }
+
+                ASTNode *identifier = new ASTNode({.token = tokens[i - 3], .left = {}, .right = {}});
+                ASTNode *type_annot = new ASTNode({.token = tokens[i - 1], .left = {}, .right = {}});
+
+                identifier->left = type_annot;
+                assignment->left = identifier;
+            }
+            }
+        }
+
+    return root;
 }
 
 int main(int argc, char *argv[]) {
@@ -125,6 +218,11 @@ int main(int argc, char *argv[]) {
 
     std::vector<Token> tokens = {};
     tokenise_expr(input, tokens);
+
+    std::ofstream output_f;
+    output_f.open("out.py");
+
+    std::vector<ASTNode *> identifiers = {};
 
     return 0;
 }
