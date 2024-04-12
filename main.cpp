@@ -1,207 +1,12 @@
-#include <cctype>
-#include <cstdlib>
-#include <fstream>
+#include <cstdio>
 #include <iostream>
-#include <optional>
-#include <sstream>
 #include <string>
 #include <vector>
+#include <stdint.h>
+#include <sys/stat.h>
 
-enum class TokenType {
-    identifier,
-    int_lit,
-    string_lit,
-    newline,
-    open_paren,
-    closed_paren,
-    assign,
-    type_annot,
-    colon,
-    comma,
-    open_quote,
-    close_quote,
-    root,
-
-    // Math
-    addition,
-    subtraction,
-    multiplication,
-    division,
-    floor_div,
-    exponentiation,
-    remainder,
-};
-
-struct Token {
-    TokenType type;
-    std::string value;
-};
-
-enum class StaticTypes {
-};
-
-struct TypedIdentifier {
-    StaticTypes type;
-    char value[76];
-};
-
-struct ASTNode {
-    Token token;
-    ASTNode *left;
-    ASTNode *right;
-};
-
-void tokenise_expr(const std::string input, std::vector<Token> &tokens) {
-    std::string buffer = {};
-    for (int i = 0; i < input.length(); ++i) {
-
-        if (std::isalpha(input[i])) {
-            while (std::isalpha(input[i])) {
-                buffer.push_back(input[i]);
-                ++i;
-            }
-
-            Token identifier = {.type = TokenType::identifier, .value = buffer};
-            tokens.push_back(identifier);
-            buffer.clear();
-            --i;
-        }
-
-        else if (std::isdigit(input[i])) {
-            while (std::isdigit(input[i])) {
-                buffer.push_back(input[i]);
-                ++i;
-            }
-
-            Token int_lit = {.type = TokenType::int_lit, .value = buffer};
-            tokens.push_back(int_lit);
-            buffer.clear();
-            --i;
-        }
-
-        switch (input[i]) {
-            case '(': {
-                Token open_paren = {.type = TokenType::open_paren, .value = "("};
-                tokens.push_back(open_paren);
-
-                int open_paren_index = i;
-                while (input[i] != ')') {
-                    ++i;
-                }
-
-                tokenise_expr(input.substr(open_paren_index+1, i-1-open_paren_index), tokens);
-                Token closed_parenthesis = {.type = TokenType::closed_paren, .value = ")"};
-                tokens.push_back(closed_parenthesis);
-            } break;
-
-            case '"': {
-                Token open_quote = {.type = TokenType::open_quote, .value = "\""};
-                tokens.push_back(open_quote);
-                ++i;
-                while (input[i] != '"') {
-                    buffer.push_back(input[i++]);
-                }
-
-                Token string = {.type = TokenType::string_lit, .value = buffer};
-                tokens.push_back(string);
-                buffer.clear();
-
-                Token close_quote = {.type = TokenType::close_quote, .value = "\""};
-                tokens.push_back(close_quote);
-            } break;
-
-            case ',': {
-                Token comma = {.type = TokenType::comma, .value = ","};
-                tokens.push_back(comma);
-
-            } break;
-
-            case ':': {
-                Token colon = {.type = TokenType::colon, .value = ":"};
-                tokens.push_back(colon);
-                i += 2;
-                while (input[i] != ' ') {
-                    buffer.push_back(input[i++]);
-                }
-                Token type_annot = {.type = TokenType::type_annot, .value = buffer};
-                tokens.push_back(type_annot);
-            } break;
-
-            case '=': {
-                Token assign = {.type = TokenType::assign, .value = "="};
-                tokens.push_back(assign);
-            } break;
-
-            case '\n': {
-                Token newline = {.type = TokenType::newline, .value = "\n"};
-                tokens.push_back(newline);
-            } break;
-
-
-            case '+': {
-                Token addition = {.type = TokenType::addition, .value = "+"};
-                tokens.push_back(addition);
-            } break;
-
-            case '-': {
-                Token subtraction = {.type = TokenType::subtraction, .value = "-"};
-                tokens.push_back(subtraction);
-            } break;
-
-            case '*': {
-                if (input [i+1] == '*') {
-                    Token exponentiation = {.type = TokenType::exponentiation, .value = "**"};
-                    tokens.push_back(exponentiation);
-                }
-
-                Token multiplication = {.type = TokenType::multiplication, .value = "*"};
-                tokens.push_back(multiplication);
-            } break;
-
-            case '/': {
-                if (input[i+1] == '/') {
-                    Token floor_div = {.type = TokenType::floor_div, .value = "//"};
-                    tokens.push_back(floor_div);
-                    break;
-                }
-
-                Token division = {.type = TokenType::division, .value = "/"};
-                tokens.push_back(division);
-            } break;
-
-            case ' ': {
-
-                while(input[++i] == ' ') {
-                    ++i;
-                }
-                --i;
-            } break;
-        }
-    }
-
-    return;
-}
-
-ASTNode *build_parse_tree(const std::vector<Token> &tokens, ASTNode *root) {
-    for (int i = 0; i < tokens.size(); ++i) {
-        switch (tokens[i].type) {
-            case TokenType::assign: {
-                ASTNode *assignment = new ASTNode({.token = tokens[i], .left = {}, .right = {}});
-                if (tokens[i - 2].type != TokenType::colon) {
-                    std::cerr << "Expected type annotation before assignment";
-                }
-
-                ASTNode *identifier = new ASTNode({.token = tokens[i - 3], .left = {}, .right = {}});
-                ASTNode *type_annot = new ASTNode({.token = tokens[i - 1], .left = {}, .right = {}});
-
-                identifier->left = type_annot;
-                assignment->left = identifier;
-            }
-            }
-        }
-
-    return root;
-}
+#include "parser.cpp"
+#include "tokeniser.cpp"
 
 int main(int argc, char *argv[]) {
     if (argc != 2) {
@@ -209,20 +14,50 @@ int main(int argc, char *argv[]) {
         return EXIT_FAILURE;
     }
 
-    std::ifstream target_f;
-    target_f.open(argv[1]);
+    // open file
+    FILE *target_f = fopen(argv[1], "r");
+    if (!target_f) {
+        perror("Couldn't open file");
+    }
 
-    std::stringstream str_stream;
-    str_stream << target_f.rdbuf();
-    const std::string input = str_stream.str();
+    // compute filesize
+    fseek(target_f, 0, SEEK_END);
+    long int filesize = ftell(target_f);
+    fseek(target_f, 0, SEEK_SET);
 
-    std::vector<Token> tokens = {};
-    tokenise_expr(input, tokens);
+    //initilise input stream
+    InputStream input_stream = {};
+    input_stream.contents = new char[filesize];
+    input_stream.size = filesize;
 
-    std::ofstream output_f;
-    output_f.open("out.py");
+    // read file into contents
+    fread(input_stream.contents, filesize, 1, target_f);
 
-    std::vector<ASTNode *> identifiers = {};
+    // Assume 1 character per token
+    std::vector<Token> tokens;
+    tokenise_file(&input_stream, &tokens);
+
+    // pull tokens into a stream for interation
+    TokenStream token_stream = TokenStream(tokens.size(), tokens);
+    token_stream.n_tokens = tokens.size();
+    token_stream.tokens = tokens;
+
+    // initilise arena and assume tokens map 1:1 onto ASTnodes
+    ASTNodeArena ast_arena = ASTNodeArena(token_stream.n_tokens+1);
+
+    ASTNode file_node = {.token = token_stream.peek(0), .type = ASTNodeType::FILE};
+    while (token_stream.peek(0)->type != TokenType::END) {
+        ASTNode child = parse_expression(&token_stream, &ast_arena, false);
+
+        if (child.token->type == TokenType::END) {
+            break;
+        }
+
+        file_node.n_children++;
+        file_node.children = ast_arena.node_alloc(&child);
+    }
+
+    ast_arena.node_alloc(&file_node);
 
     return 0;
 }
