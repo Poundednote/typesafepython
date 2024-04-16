@@ -88,7 +88,7 @@ struct Token {
     int32_t column = 0;
 
     TokenType precendence();
-    bool is_binary_op();
+    inline bool is_binary_op();
 };
 
 

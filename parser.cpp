@@ -26,33 +26,33 @@ inline ASTNode ast_node_binary_create(Token *token, ASTNode *left, ASTNode *righ
     return node;
 }
 
-ASTNode parse_expression(TokenStream *token_stream, ASTNodeArena *arena, bool in_paren) {
+ASTNode *parse_expression(TokenStream *token_stream, ASTNodeArena *arena, bool in_paren) {
     Token *current_token = token_stream->peek(0);
     Token *next_token = token_stream->next_token();
     ASTNode node = {.token = current_token};
 
     if (current_token->type == TokenType::COMMA) {
-        return node;
+        return arena->node_alloc(&node);
     }
 
     if (current_token->type == TokenType::NEWLINE) {
-        return node;
+        return arena->node_alloc(&node);
     }
 
     if (current_token->type == TokenType::ENDFILE) {
-        return node;
+        return arena->node_alloc(&node);
     }
 
     if (next_token->is_binary_op()) {
         token_stream->next_token(); // skip to next token for parsing;
-        ASTNode right = parse_expression(token_stream, arena, in_paren);
+        ASTNode *right = parse_expression(token_stream, arena, in_paren);
 
         ASTNode binary_op_node = ast_node_binary_create(
-            next_token, arena->node_alloc(&node), arena->node_alloc(&right));
+            next_token, arena->node_alloc(&node), right);
 
         ASTNode *binary = arena->node_alloc(&binary_op_node);
 
-        if (binary->token->precendence() > right.token->precendence()) {
+        if (binary->token->precendence() > right->token->precendence()) {
             //shuffle around tree based on precedence
             ASTNode *new_root = binary->binary.right;
             ASTNode *temp = new_root->binary.left;
@@ -60,43 +60,44 @@ ASTNode parse_expression(TokenStream *token_stream, ASTNodeArena *arena, bool in
             new_root->binary.left = binary;
             binary->binary.right = temp;
 
-            return *new_root;
+            return new_root;
         }
 
-        return binary_op_node;
+        return binary;
     }
 
     switch (current_token->type) {
         case TokenType::IDENTIFIER: {
             node.type = ASTNodeType::TERMINAL;
-            return node;
+            return arena->node_alloc(&node);
             break;
         }
+
         case TokenType::NONE: {
             node.type = ASTNodeType::TERMINAL;
-            return node;
+            return arena->node_alloc(&node);
             break;
         }
         case TokenType::TRUE: {
             node.type = ASTNodeType::TERMINAL;
-            return node;
+            return arena->node_alloc(&node);
             break;
         }
         case TokenType::FALSE: {
             node.type = ASTNodeType::TERMINAL;
-            return node;
+            return arena->node_alloc(&node);
             break;
         }
 
         case TokenType::INT_LIT: {
             node.type = ASTNodeType::TERMINAL;
-            return node;
+            return arena->node_alloc(&node);
             break;
         }
 
         case TokenType::STRING_LIT: {
             node.type = ASTNodeType::TERMINAL;
-            return node;
+            return arena->node_alloc(&node);
             break;
         }
     }

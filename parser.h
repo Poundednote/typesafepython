@@ -42,5 +42,5 @@ struct ASTNodeArena {
 };
 
 inline ASTNode ast_node_binary_create(Token token, ASTNode *left, ASTNode *right);
-ASTNode parse_expression(TokenStream *token_stream, ASTNodeArena *arena, bool in_paren);
+ASTNode *parse_expression(TokenStream *token_stream, ASTNodeArena *arena, bool in_paren);
 #endif // PARSER_H_

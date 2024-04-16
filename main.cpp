@@ -47,14 +47,13 @@ int main(int argc, char *argv[]) {
 
     ASTNode file_node = {.token = token_stream.peek(0), .type = ASTNodeType::FILE};
     while (token_stream.peek(0)->type != TokenType::END) {
-        ASTNode child = parse_expression(&token_stream, &ast_arena, false);
+        ASTNode *child = parse_expression(&token_stream, &ast_arena, false);
 
-        if (child.token->type == TokenType::END) {
+        if (child->token->type == TokenType::END) {
             break;
         }
 
         file_node.n_children++;
-        file_node.children = ast_arena.node_alloc(&child);
     }
 
     ast_arena.node_alloc(&file_node);

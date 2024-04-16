@@ -4,7 +4,7 @@
 
 #include "tokeniser.h"
 
-bool Token::is_binary_op() {
+inline bool Token::is_binary_op() {
     switch (this->type) {
         case TokenType::MULTIPLICATION: {
             return true;
