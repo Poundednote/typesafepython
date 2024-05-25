@@ -2,120 +2,136 @@
 #define TOKENISER_H_
 
 #include <cstdint>
+#include <cstring>
 #include <stdint.h>
 #include <string>
 #include <stdlib.h>
 #include <vector>
 
+// Listed in reverse order of precedence for token_precendce()
+// precedence may be used even in non math operations such as typed assignments
+// operators clumped together have the same precendece
+//
 enum class TokenType {
-    // Listed in reverse order of precedence for token_precendce()
-    // precedence may be used even in non math operations such as typed assignments
-    // operators clumped together have the same precendece
-    //
-    //
-    //FILE
-    FILE,
-    ENDFILE,
-
-    //ATOM
-
     // MISC
-    NEWLINE,
-    OPEN_PAREN,
-    CLOSED_PAREN,
-    TYPE_ANNOT,
-    COMMA,
-    OPEN_QUOTE,
-    CLOSE_QUOTE,
-    ROOT,
+    NEWLINE = 0,
+    INDENT = 1,
+    DEDENT = 2,
+    OPEN_PAREN = 3,
+    CLOSED_PAREN = 4,
+    COMMA = 5,
+    ASSIGN = 6,
+    COLON = 7,
 
+    OR = 8,
 
-    ASSIGN,
+    AND = 9,
 
-    COLON,
+    NOT = 10,
 
-    OR,
+    EQ = 11,
+    NE = 12,
+    LE = 13,
+    LT = 14,
+    GE = 15,
+    GT = 16,
+    IS = 17,
+    IN = 18,
 
-    AND,
+    BWOR = 19,
 
-    NOT,
+    BWXOR = 20,
 
-    EQ,
-    NE,
-    LE,
-    LT,
-    GE,
-    GT,
-    ISNOT,
-    IS,
-    NOTIN,
-    IN,
+    BWAND = 21,
 
-    BWOR,
+    SHIFTLEFT = 22,
+    SHIFTRIGHT = 23,
 
-    BWXOR,
+    ADDITION = 24,
+    SUBTRACTION = 25,
 
-    BWAND,
+    MULTIPLICATION = 26,
+    DIVISION = 27,
+    FLOOR_DIV = 28,
+    REMAINDER = 29,
 
-    SHIFTLEFT,
-    SHIFTRIGHT,
+    EXPONENTIATION = 30,
 
-    ADDITION,
-    SUBTRACTION,
+    // ATOMS
+    IDENTIFIER = 31,
+    INT_LIT = 32,
+    FLOAT_LIT = 33,
+    STRING_LIT = 34,
+    NONE = 35,
+    TRUE = 36,
+    FALSE = 37,
 
-    MULTIPLICATION,
-    DIVISION,
-    FLOOR_DIV,
-    REMAINDER,
+    RETURN = 38,
+    RAISE = 39,
+    GLOBAL = 40,
+    NONLOCAL = 41,
 
-    EXPONENTIATION,
-
-    IDENTIFIER,
-    INT_LIT,
-    STRING_LIT,
-    NONE,
-    TRUE,
-    FALSE,
-
-    END // marks the end of a token stream
+    //FILE
+    FILE = 42,
+    ENDFILE = 43,
+    ERROR = 44
 };
 
 struct Token {
     TokenType type;
-
-    std::string value;
-    int32_t line = 0;
-    int32_t column = 0;
+    uint32_t line = 0;
+    uint32_t column = 0;
+    std::string value = "";
 
     TokenType precendence();
-    inline bool is_binary_op();
+    bool is_binary_op();
+    bool is_atom();
+    std::string debug_to_string();
 };
 
-
 struct TokenStream {
-    uint32_t n_tokens = 0;
     uint32_t position = 0;
     std::vector<Token> &tokens;
 
-    TokenStream(uint32_t n_tokens, std::vector<Token> &tokens) : tokens(tokens) {
-        this->n_tokens = n_tokens;
+    TokenStream(std::vector<Token> &t) : tokens(t) {
         this->position = 0;
     }
 
-    Token *peek(uint32_t ahead);
-    Token *next_token();
+    inline Token *peek(uint32_t ahead);
+    inline Token *next_token();
 };
-
 
 struct InputStream {
     uint32_t position = 0;
-    char *contents;
-    long int size;
+    char *contents = nullptr;
+    uint64_t size = 0;
+    uint32_t col = 0;
+    uint32_t line = 0;
 
-    char peek(uint32_t ahead);
-    char next_char();
+    InputStream();
+
+    static InputStream create_from_file(const char *filename);
+    InputStream(const InputStream &source);
+    const InputStream& operator=(const InputStream& rval) {
+        delete[] this->contents;
+
+        this->position = rval.position;
+        this->contents = new char[rval.size];
+        memcpy(this->contents, rval.contents, rval.size);
+        this->size = rval.size;
+        this->col = rval.col;
+        this->line = rval.line;
+
+        return *this;
+ }
+
+    ~InputStream() {
+        delete[] this->contents;
+    }
+
+    inline char peek(uint32_t ahead);
+    inline char next_char();
 };
-
 
 void tokenise_file(InputStream *input, std::vector<Token> *tokens);
 #endif // TOKENISER_H_

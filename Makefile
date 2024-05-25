@@ -2,10 +2,10 @@
 # Project typesafepython
 #
 # @file
-# @version 0.1
+
 
 typesafepython: main.cpp
-	g++ -g main.cpp -Wall -o ./build/tspython.out
-
+	g++ -std=c++20 -g -O0 main.cpp -Wall -Wno-sign-compare -o ./build/tspython.out
+	g++ -std=c++20 -g -O0 tests.cpp -Wall -Wno-sign-compare -o ./test
 
 # end
