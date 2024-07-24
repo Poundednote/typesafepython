@@ -1,3 +1,7 @@
-*.py
 build/
+build.bat
+*.json
+*.pdb
+.vs/
 *.org
+Makefile

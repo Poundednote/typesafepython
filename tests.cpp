@@ -1,18 +1,33 @@
-#include <iostream>
-#include <iterator>
 #include <stdio.h>
-#include <string.h>
-#include <vector>
+#include <iostream>
 
 #include "tokeniser.cpp"
 #include "parser.cpp"
-#include "tokeniser.h"
+#include "typing.cpp"
+
+#define PARSER_TESTS 1
 
 #define INIT_MAIN() Test TEST = {};
-#define START_TEST() Test test = {};
-#define END_TEST() test.passed = true; return test;
-#define TEST(test) TEST = test(); if (!(TEST.passed)) {std::cout << "\nfailed case: " << TEST.cases << " on line: " << TEST.line << " in " << #test "\n"; return 1;}
-#define FAILCASE(condition, info) test.line = __LINE__; if (!(condition)) {std::cerr << "Expected condition:" << #condition << "\n" << "Actual value: " << (info) << "\n"; test.passed = false; return test;} else {++test.cases;}
+#define START_TEST() Test actual_test = {}; Test *test = &actual_test;
+#define END_TEST() test->passed = true; return *test;
+#define TEST(test) TEST = test(); if (!(TEST.passed)) {printf("\nfailed case: %d on line: %d in %s\n", TEST.cases, TEST.line, #test); return 1;}
+
+#define ASSERT(condition, info) \
+  test->line = __LINE__;                                                       \
+  if (!(condition)) {                                                          \
+    std::cout << "Expected condition: " << #condition " Aditional info: " << info << std::endl; \
+    test->passed = false;                                                      \
+    return *test;                                                              \
+  } else {                                                                     \
+    ++test->cases;                                                             \
+  }
+
+std::string additional_info = "";
+
+//TODO test precedence programtically
+//TODO compund stmt tetss
+//TODO primary tests
+//TODO target tests
 
 struct Test {
     int cases = 1;
@@ -20,80 +35,79 @@ struct Test {
     int line;
 };
 
-InputStream create_stream_from_mock_file(std::string mock_file) {
-    InputStream stream = {};
-    stream.contents = new char[mock_file.length()];
-    if (stream.contents == nullptr) {
-       std::cerr << "SHITFAILED";
-    }
+InputStream input_stream_create_from_string(const char *string) {
+    InputStream input_stream = {};
+    input_stream.contents = (char *)string;
+    input_stream.size = strlen(string);
 
-    for (int i = 0; i < mock_file.length(); ++i) {
-        stream.contents[i] = mock_file[i];
-    }
-
-    stream.size = mock_file.length();
-    return stream;
+    return input_stream;
 }
 
 static Test tokenise_file_test() {
     START_TEST()
-    std::string mock_file = "(),=: or and not == != <= <>= > is in |^&<<>>+-* / // % ** identifier 123 123.321 \"string\" None True False return raise global nonlocal";
-    InputStream stream = create_stream_from_mock_file(mock_file);
-    std::vector<Token> tokens = {};
-    tokenise_file(&stream, &tokens);
+        const char *mock_file = "or and not == != <= <>= > is in |^&<<>>+-* / // % ** . return yield raise global nonlocal if elif else def class while for try except finally as pass break continue identifier 123 123.321 \"string\" None True False ()[]{},=:->@import\n";
+    InputStream input_stream = input_stream_create_from_string(mock_file);
+    Tokeniser tokeniser = Tokeniser::init(&input_stream);
 
-    for (int i = 1; i < tokens.size()-1; ++i) {
-        int current = (i-1)+(int)TokenType::OPEN_PAREN;
-        // check last token is nonlocal
-        if (i+1 >= tokens.size() && tokens[i].type != TokenType::NONLOCAL) {
-            std::cerr << "Unexpected end of token stream\n";
-            std::cerr << "Last token was: " << tokens[i-1].debug_to_string()
-                      << "\nline: " << tokens[i-1].line
-                      << " col: " << tokens[i-1].column
-                      << "\nexpected next token as: "
-                      << ((Token *)(&current))->debug_to_string() << "\n";
+    int i = 1;
+    for (Token current = tokeniser.last_returned;
+         i < 63;
+         current = tokeniser.next_token(), ++i) {
 
-            return test;
+
+        if ((int)current.type != i) {
+            printf("token: %s \nline: %d col: %d \ndidn't match with expected for %s",
+                   debug_token_type_to_string(current.type).c_str(),
+                   current.line, current.column,
+                   debug_token_type_to_string(*(enum TokenType *)(&i)).c_str());
+
+
+
+            return *test;
         }
 
-        if ((int)tokens[i].type != current) {
-            std::cerr << "token: " << tokens[i].debug_to_string()
-                        << "\nline: " << tokens[i].line
-                        << " col: " << tokens[i].column
-                        << "\ndidn't match with expected for "
-                        << ((Token *)(&current))->debug_to_string()
-                        << " in file \n";
+        if (current.type == TokenType::INT_LIT) {
+            if (current.value != "123") {
+              printf("INT token with value: '%s' failed to match with expected value of: 123\n",
+                     current.value.c_str());
 
-          return test;
-        }
-
-        if (tokens[i].type == TokenType::INT_LIT) {
-            if (tokens[i].value != "123") {
-                std::cerr << "INT token with value: " << tokens[i].value
-                            << "failed to match with expected value of: 123\n";
-
-              return test;
+              return *test;
           }
         }
 
-        if (tokens[i].type == TokenType::FLOAT_LIT) {
-            if (tokens[i].value != "123.321") {
-                std::cerr << "INT token with value: " << tokens[i].value
-                        << " failed to match with expected value of: 123.321\n";
-                return test;
+        if (current.type == TokenType::FLOAT_LIT) {
+            if (current.value != "123.321") {
+              printf("INT token with value: '%s' failed to match with expected "
+                     "value of: 123.321\n",
+                     current.value.c_str());
+
+              return *test;
           }
         }
 
-        if (tokens[i].type == TokenType::STRING_LIT) {
-            if (tokens[i].value != "string") {
-                std::cerr << "String token with value: " << tokens[i].value
-                          << " failed to match with expected value of: string\n";
-            return test;
+        if (current.type == TokenType::STRING_LIT) {
+            if (current.value != "string") {
+
+              printf("String token with value: '%s' failed to match with expected "
+                     "value of: string", current.value.c_str());
+
+            return *test;
           }
         }
+
+        if (current.type == TokenType::IDENTIFIER) {
+            if (current.value != "identifier") {
+            printf("identifer token with value: '%s' failed to match with "
+                   "expected value of: identifier\n",
+                   current.value.c_str());
+
+            return *test;
+          }
+        }
+
+        ++test->cases;
     }
 
-    ++test.cases;
 
     END_TEST()
 }
@@ -101,95 +115,332 @@ static Test tokenise_file_test() {
 static Test tokenise_file_indentation_test() {
     START_TEST()
     const char *mock_file = "\n    \n        ";
-    InputStream stream = create_stream_from_mock_file(mock_file);
-    std::vector<Token> tokens = {};
-    tokenise_file(&stream, &tokens);
+    InputStream input_stream = input_stream_create_from_string(mock_file);
+    Tokeniser tokeniser = Tokeniser::init(&input_stream);
 
-    FAILCASE(tokens[2].type == TokenType::INDENT, tokens[2].debug_to_string());
-    FAILCASE(tokens[4].type == TokenType::INDENT, tokens[4].debug_to_string());
-    FAILCASE(tokens[5].type == TokenType::INDENT, tokens[5].debug_to_string());
-    FAILCASE(tokens[6].type == TokenType::DEDENT, tokens[6].debug_to_string());
-    FAILCASE(tokens[7].type == TokenType::DEDENT, tokens[7].debug_to_string());
+    Token current = tokeniser.next_token();
+    ASSERT(current.type == TokenType::INDENT, debug_token_type_to_string(current.type).c_str());
+    tokeniser.next_token();
+    current = tokeniser.next_token();
+    ASSERT(current.type == TokenType::INDENT, debug_token_type_to_string(current.type).c_str());
+    current = tokeniser.next_token();
+    ASSERT(current.type == TokenType::DEDENT, debug_token_type_to_string(current.type).c_str());
+    current = tokeniser.next_token();
+    ASSERT(current.type == TokenType::DEDENT, debug_token_type_to_string(current.type).c_str());
+    current = tokeniser.next_token();
+    ASSERT(current.type == TokenType::ENDFILE, debug_token_type_to_string(current.type).c_str());
 
     mock_file = "\n        \n    3+3\n";
-    stream = create_stream_from_mock_file(mock_file);
-    tokens.clear();
-    tokenise_file(&stream, &tokens);
 
-    FAILCASE(tokens[2].type == TokenType::INDENT, tokens[3].debug_to_string());
-    FAILCASE(tokens[3].type == TokenType::INDENT, tokens[4].debug_to_string());
-    FAILCASE(tokens[5].type == TokenType::DEDENT, tokens[6].debug_to_string());
+    input_stream = input_stream_create_from_string(mock_file);
+    tokeniser = Tokeniser::init(&input_stream);
 
-    END_TEST()
+    current = tokeniser.next_token();
+    ASSERT(current.type == TokenType::INDENT, debug_token_type_to_string(current.type).c_str());
+    current = tokeniser.next_token();
+    ASSERT(current.type == TokenType::INDENT, debug_token_type_to_string(current.type).c_str());
+    tokeniser.next_token();
+
+    current = tokeniser.next_token();
+    ASSERT(current.type == TokenType::DEDENT, debug_token_type_to_string(current.type).c_str());
+    current = tokeniser.next_token();
+    ASSERT(current.type == TokenType::INT_LIT, debug_token_type_to_string(current.type).c_str());
+    current = tokeniser.next_token();
+    ASSERT(current.type == TokenType::ADDITION, debug_token_type_to_string(current.type).c_str());
+    current = tokeniser.next_token();
+    ASSERT(current.type == TokenType::INT_LIT, debug_token_type_to_string(current.type).c_str());
+    current = tokeniser.next_token();
+    ASSERT(current.type == TokenType::NEWLINE, debug_token_type_to_string(current.type).c_str());
+    current = tokeniser.next_token();
+    ASSERT(current.type == TokenType::DEDENT, debug_token_type_to_string(current.type).c_str());
+    current = tokeniser.next_token();
+    ASSERT(current.type == TokenType::ENDFILE, debug_token_type_to_string(current.type).c_str());
+
+    mock_file = "\n        \n3+3\n";
+    input_stream = input_stream_create_from_string(mock_file);
+    tokeniser = Tokeniser::init(&input_stream);
+    current = tokeniser.next_token();
+    ASSERT(current.type == TokenType::INDENT, debug_token_type_to_string(current.type).c_str());
+    current = tokeniser.next_token();
+    ASSERT(current.type == TokenType::INDENT, debug_token_type_to_string(current.type).c_str());
+    tokeniser.next_token();
+
+    current = tokeniser.next_token();
+    ASSERT(current.type == TokenType::DEDENT, debug_token_type_to_string(current.type).c_str());
+    current = tokeniser.next_token();
+    ASSERT(current.type == TokenType::DEDENT, debug_token_type_to_string(current.type).c_str());
+    current = tokeniser.next_token();
+    ASSERT(current.type == TokenType::INT_LIT, debug_token_type_to_string(current.type).c_str());
+    current = tokeniser.next_token();
+    ASSERT(current.type == TokenType::ADDITION, debug_token_type_to_string(current.type).c_str());
+    current = tokeniser.next_token();
+    ASSERT(current.type == TokenType::INT_LIT, debug_token_type_to_string(current.type).c_str());
+    current = tokeniser.next_token();
+    ASSERT(current.type == TokenType::NEWLINE, debug_token_type_to_string(current.type).c_str());
+    current = tokeniser.next_token();
+    ASSERT(current.type == TokenType::ENDFILE, debug_token_type_to_string(current.type).c_str());
+
+
+    END_TEST();
 }
+
+#if PARSER_TESTS
 
 static Test floats_and_numbers_types_test() {
     START_TEST();
-    const char *mock_file = "3 + 3\n 3 - 3.0\n3.0 * 3\n3.0 - 3.0\n3 / 3\n 3 // 3";
-    InputStream stream = create_stream_from_mock_file(mock_file);
-    std::vector<Token> tokens = {};
+    const char *mock_file = "3 + 3\n3 - 3.0\n3.0 * 3\n3.0 - 3.0\n3 / 3\n 3 // 3";
+    InputStream input_stream = input_stream_create_from_string(mock_file);
 
-    tokenise_file(&stream, &tokens);
-    TokenStream token_stream  = TokenStream(tokens);
-    ASTNodeArena ast_arena = ASTNodeArena(token_stream.tokens.size()+1);
-    ASTNode *root = parse_statements(&token_stream, &ast_arena, false);
-    type_parse_tree(root);
-    debug_print_parse_tree(root, "        ");
+    if (!input_stream.contents) {
+        exit(1);
+    }
 
-    ASTNode *child = root->children;
-    FAILCASE(child->static_type == StaticType::INTEGER, debug_static_type_to_string(child->static_type));
-    child = child->next;
-    FAILCASE(child->static_type == StaticType::DECIMAL, debug_static_type_to_string(child->static_type));
-    child = child->next;
-    FAILCASE(child->static_type == StaticType::DECIMAL, debug_static_type_to_string(child->static_type));
-    child = child->next;
-    FAILCASE(child->static_type == StaticType::DECIMAL, debug_static_type_to_string(child->static_type));
-    child = child->next;
-    FAILCASE(child->static_type == StaticType::DECIMAL, debug_static_type_to_string(child->static_type));
-    child = child->next;
-    FAILCASE(child->static_type == StaticType::INTEGER, debug_static_type_to_string(child->static_type));
+    Tokeniser tokeniser = Tokeniser::init(&input_stream);
+    Arena ast_arena = Arena::init(GIGABYTES(32));
 
-    END_TEST()
+    Arena symbol_table_arena = Arena::init(GIGABYTES(1));
+
+    CompilerTables tables = CompilerTables::init(&symbol_table_arena);
+
+    SymbolTableValue main_symbol_value = {};
+    main_symbol_value.symbol_type = SymbolType::FUNCTION;
+    main_symbol_value.static_type.type = TypeInfoType::INTEGER;
+
+    std::string main_identifier = "main";
+    SymbolTableEntry *main_scope = tables.function_table->insert(
+        &symbol_table_arena, main_identifier, 0, main_symbol_value);
+
+    AstNode *root = parse_statements(&tokeniser, &ast_arena, main_scope, &tables, &symbol_table_arena);
+    AstNode *child = root->nary.children;
+
+    Arena scope_stack = Arena();
+    type_parse_tree(root, &scope_stack, &tables);
+    scope_stack.destroy();
+
+    ASSERT(child->static_type.type == TypeInfoType::INTEGER, debug_static_type_to_string(child->static_type).c_str());
+    child = child->adjacent_child;
+    ASSERT(child->static_type.type == TypeInfoType::FLOAT, debug_static_type_to_string(child->static_type).c_str());
+    child = child->adjacent_child;
+    ASSERT(child->static_type.type == TypeInfoType::FLOAT, debug_static_type_to_string(child->static_type).c_str());
+    child = child->adjacent_child;
+    ASSERT(child->static_type.type == TypeInfoType::FLOAT, debug_static_type_to_string(child->static_type).c_str());
+    child = child->adjacent_child;
+    ASSERT(child->static_type.type == TypeInfoType::FLOAT, debug_static_type_to_string(child->static_type).c_str());
+    child = child->adjacent_child;
+    ASSERT(child->static_type.type == TypeInfoType::INTEGER, debug_static_type_to_string(child->static_type).c_str());
+
+    ast_arena.destroy();
+    symbol_table_arena.destroy();
+
+    END_TEST();
+}
+
+static Test ifelse_test() {
+    START_TEST();
+    InputStream input_stream = InputStream::create_from_file("tests/ifelse.py");
+    if (!input_stream.contents) {exit(1);}
+    Tokeniser tokeniser = Tokeniser::init(&input_stream);
+    Arena ast_arena = Arena::init(GIGABYTES(32));
+
+    Arena symbol_table_arena = Arena::init(GIGABYTES(1));
+
+    CompilerTables tables = CompilerTables::init(&symbol_table_arena);
+
+    SymbolTableValue main_symbol_value = {};
+    main_symbol_value.symbol_type = SymbolType::FUNCTION;
+    main_symbol_value.static_type.type = TypeInfoType::INTEGER;
+
+    std::string main_identifier = "main";
+    SymbolTableEntry *main_scope = tables.function_table->insert(
+        &symbol_table_arena, main_identifier, 0, main_symbol_value);
+
+    AstNode *root = parse_statements(&tokeniser, &ast_arena, main_scope, &tables, &symbol_table_arena);
+    AstNode *statement = root->nary.children;
+    ASSERT(statement->token.type == TokenType::IF, debug_token_type_to_string(statement->token.type).c_str());
+
+    statement = statement->adjacent_child;
+    ASSERT(statement->token.type == TokenType::IF, debug_token_type_to_string(statement->token.type).c_str());
+    ASSERT(statement->if_stmt.condition->token.type == TokenType::GT, debug_token_type_to_string(statement->if_stmt.condition->token.type).c_str());
+    ASSERT(statement->if_stmt.or_else->token.type == TokenType::ELIF, debug_token_type_to_string(statement->if_stmt.or_else->token.type).c_str());
+
+    statement = statement->adjacent_child;
+    ASSERT(statement->token.type == TokenType::IF, debug_token_type_to_string(statement->token.type).c_str());
+    ASSERT(statement->if_stmt.condition->token.type == TokenType::GT, debug_token_type_to_string(statement->if_stmt.condition->token.type).c_str());
+    ASSERT(statement->if_stmt.or_else->token.type == TokenType::ELSE, debug_token_type_to_string(statement->if_stmt.or_else->token.type).c_str());
+
+    statement = statement->adjacent_child;
+    ASSERT(statement->token.type == TokenType::IF, debug_token_type_to_string(statement->token.type).c_str());
+    ASSERT(statement->if_stmt.condition->token.type == TokenType::GT, debug_token_type_to_string(statement->if_stmt.condition->token.type).c_str());
+    ASSERT(statement->if_stmt.or_else->token.type == TokenType::ELIF, debug_token_type_to_string(statement->if_stmt.or_else->token.type).c_str());
+    AstNode *or_else = statement->if_stmt.or_else->if_stmt.or_else;
+    ASSERT(or_else->token.type == TokenType::ELSE, debug_token_type_to_string(or_else->token.type).c_str());
+
+    statement = statement->adjacent_child;
+    ASSERT(statement->token.type == TokenType::IF, debug_token_type_to_string(statement->token.type).c_str());
+    ASSERT(statement->if_stmt.condition->token.type == TokenType::GT, debug_token_type_to_string(statement->if_stmt.condition->token.type).c_str());
+    ASSERT(statement->if_stmt.or_else->token.type == TokenType::ELIF, debug_token_type_to_string(statement->if_stmt.or_else->token.type).c_str());
+    or_else = statement->if_stmt.or_else->if_stmt.or_else;
+    ASSERT(or_else->token.type == TokenType::ELIF, debug_token_type_to_string(or_else->token.type).c_str());
+    ASSERT(or_else->if_stmt.condition->token.type == TokenType::GT, debug_token_type_to_string(or_else->if_stmt.condition->token.type).c_str());
+    or_else = or_else->if_stmt.or_else;
+    ASSERT(or_else->token.type == TokenType::ELSE, debug_token_type_to_string(or_else->token.type).c_str());
+
+    ast_arena.destroy();
+    symbol_table_arena.destroy();
+    input_stream.destroy();
+
+    END_TEST();
+}
+
+static Test functiondef_test() {
+    START_TEST();
+    InputStream input_stream = InputStream::create_from_file("tests/functiondef.py");
+    if (!input_stream.contents) {exit(1);}
+    Tokeniser tokeniser = Tokeniser::init(&input_stream);
+    Arena ast_arena = Arena::init(GIGABYTES(32));
+
+    Arena symbol_table_arena = Arena::init(GIGABYTES(1));
+
+    CompilerTables tables = CompilerTables::init(&symbol_table_arena);
+
+    SymbolTableValue main_symbol_value = {};
+    main_symbol_value.symbol_type = SymbolType::FUNCTION;
+    main_symbol_value.static_type.type = TypeInfoType::INTEGER;
+
+    std::string main_identifier = "main";
+    SymbolTableEntry *main_scope = tables.function_table->insert(
+        &symbol_table_arena, main_identifier, 0, main_symbol_value);
+
+    AstNode *root = parse_statements(&tokeniser, &ast_arena, main_scope, &tables, &symbol_table_arena);
+    AstNode *statement = root->nary.children;
+    ASSERT(statement->type == AstNodeType::FUNCTION_DEF,
+           "NOT FUNCTIONDEF");
+
+    ASSERT(statement->token.type == TokenType::DEF,
+           debug_token_type_to_string(statement->token.type));
+
+    ASSERT(statement->function_def.arguments == nullptr,
+           "NOT NULL");
+
+    ASSERT(statement->function_def.block->nary.children->token.type == TokenType::ADDITION,
+           debug_token_type_to_string(statement->function_def.block->nary.children->token.type));
+
+    ASSERT(statement->function_def.block->nary.children->adjacent_child->token.type == TokenType::ADDITION,
+           debug_token_type_to_string(statement->function_def.block->nary.children->adjacent_child->token.type));
+
+    ASSERT(statement->function_def.return_type->token.value == "int",
+           statement->function_def.return_type->token.value);
+
+    statement = statement->adjacent_child;
+    ASSERT(statement->type == AstNodeType::FUNCTION_DEF,
+           "NOT FUNCTIONDEF");
+    ASSERT(statement->token.type == TokenType::DEF,
+           debug_token_type_to_string(statement->token.type));
+
+    AstNode *param = statement->function_def.arguments;
+
+    ASSERT(param->token.type == TokenType::IDENTIFIER,
+           debug_token_type_to_string(param->token.type));
+    ASSERT(param->declaration.annotation->token.type == TokenType::IDENTIFIER,
+           debug_token_type_to_string(param->declaration.annotation->token.type));
+    ASSERT(param->declaration.annotation->token.value == "int",
+           param->declaration.annotation->token.value);
+    param = param->adjacent_child;
+
+    ASSERT(param->token.type == TokenType::IDENTIFIER,
+           debug_token_type_to_string(param->token.type));
+    ASSERT(param->declaration.annotation->token.type == TokenType::IDENTIFIER,
+           debug_token_type_to_string(param->declaration.annotation->token.type));
+    ASSERT(param->declaration.annotation->token.value == "string",
+           param->declaration.annotation->token.value);
+
+    ASSERT(statement->function_def.block->nary.children->token.type == TokenType::ADDITION,
+           debug_token_type_to_string(statement->function_def.block->nary.children->token.type));
+
+    ASSERT(statement->function_def.return_type->token.value == "string",
+           statement->function_def.return_type->token.value);
+
+    ast_arena.destroy();
+    symbol_table_arena.destroy();
+
+    END_TEST();
+}
+
+
+static Test precedence_test_helper(Test *test, AstNode *root) {
+    if (!root) {
+        return *test;
+    }
+
+    AstNode *child = root->nary.children;
+    while (child) {
+        int additional_info = child->token.precedence();
+        ASSERT(child->token.precedence() >= root->token.precedence(), root->token.precedence());
+        precedence_test_helper(test, child);
+        child = child->adjacent_child;
+    }
+
+    return *test;
+
+}
+
+static Test precedence_test() {
+    START_TEST();
+    InputStream input_stream = InputStream::create_from_file("tests/precedence.py");
+    if (!input_stream.contents) {exit(1);}
+    Tokeniser tokeniser = Tokeniser::init(&input_stream);
+    Arena ast_arena = Arena::init(GIGABYTES(32));
+
+    Arena symbol_table_arena = Arena::init(GIGABYTES(1));
+
+    CompilerTables tables = CompilerTables::init(&symbol_table_arena);
+
+    SymbolTableValue main_symbol_value = {};
+    main_symbol_value.symbol_type = SymbolType::FUNCTION;
+    main_symbol_value.static_type.type = TypeInfoType::INTEGER;
+
+    std::string main_identifier = "main";
+    SymbolTableEntry *main_scope = tables.function_table->insert(
+        &symbol_table_arena, main_identifier, 0, main_symbol_value);
+
+    AstNode *root = parse_statements(&tokeniser, &ast_arena, main_scope, &tables, &symbol_table_arena);
+    AstNode *statement = root->nary.children;
+    while (statement) {
+        precedence_test_helper(test, statement);
+        statement = statement->adjacent_child;
+    }
+
+    ast_arena.destroy();
+    symbol_table_arena.destroy();
+    END_TEST();
 }
 
 #if 0
-static bool parse_expression_test() {
-    InputStream input_stream = InputStream::create_from_file("tests/test_precedence.typ");
-    if (input_stream.contents == nullptr) {
-        return false;
-    }
-
-    std::vector<Token> tokens = {};
-    tokenise_file(&input_stream, &tokens);
-    TokenStream token_stream = TokenStream(tokens);
-
-    ASTNodeArena ast_arena = ASTNodeArena(token_stream.tokens.size()+1);
-    ASTNode file_node = {.token = token_stream.peek(0), .type = ASTNodeType::NARY};
-
-    while (token_stream.peek(0)) {
-        ASTNode *child = parse_statement(&token_stream, &ast_arena, false);
-        if (!child) {
-            break;
-        }
-
-        file_node.nary.n_children++;
-        file_node.nary.children = child;
-
-        token_stream.next_token();
-    }
-
-    ast_arena.node_alloc(&file_node);
-
-    return true;
+static Test primary_test() {
+    START_TEST();
+    InputStream input_stream = InputStream::create_from_file("tests/primary.py");
+    if (!input_stream.contents) {exit(1);}
+    Tokeniser tokeniser = Tokeniser(&input_stream);
+    AstNodeArena ast_arena = AstNodeArena(1000);
+    AstNode *root = parse_statements(&tokeniser, &ast_arena);
 }
+
+#endif
+
 #endif
 
 int main() {
     INIT_MAIN()
     TEST(tokenise_file_test);
     TEST(tokenise_file_indentation_test);
-    TEST(floats_and_numbers_types_test);
 
-    std::cout << "ALL TESTS PASSED\n";
+    #if PARSER_TESTS
+    TEST(floats_and_numbers_types_test);
+    TEST(ifelse_test);
+    TEST(functiondef_test);
+    TEST(precedence_test)
+    #endif
+
+    printf("ALL TESTS PASSED\n");
     return 0;
 }

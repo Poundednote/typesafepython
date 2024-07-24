@@ -1,137 +1,151 @@
 #ifndef TOKENISER_H_
 #define TOKENISER_H_
 
-#include <cstdint>
-#include <cstring>
 #include <stdint.h>
 #include <string>
-#include <stdlib.h>
-#include <vector>
+
+#if DEBUG
+#define assert(condition) if(!(condition)) {*(volatile int *)(0) = 0;}
+#endif
 
 // Listed in reverse order of precedence for token_precendce()
 // precedence may be used even in non math operations such as typed assignments
 // operators clumped together have the same precendece
 //
 enum class TokenType {
-    // MISC
-    NEWLINE = 0,
-    INDENT = 1,
-    DEDENT = 2,
-    OPEN_PAREN = 3,
-    CLOSED_PAREN = 4,
-    COMMA = 5,
-    ASSIGN = 6,
-    COLON = 7,
 
-    OR = 8,
+    // BOOLEAN
+    OR = 1,
 
-    AND = 9,
+    AND = 2,
 
-    NOT = 10,
+    NOT = 3,
 
-    EQ = 11,
-    NE = 12,
-    LE = 13,
-    LT = 14,
-    GE = 15,
-    GT = 16,
-    IS = 17,
-    IN = 18,
+    // COMPARISON
+    EQ = 4,
+    NE = 5,
+    LE = 6,
+    LT = 7,
+    GE = 8,
+    GT = 9,
+    IS = 10,
+    IN_TOK = 11,
 
-    BWOR = 19,
+    //BITWISE
+    BWOR = 12,
 
-    BWXOR = 20,
+    BWXOR = 13,
 
-    BWAND = 21,
+    BWAND = 14,
 
-    SHIFTLEFT = 22,
-    SHIFTRIGHT = 23,
+    SHIFTLEFT = 15,
+    SHIFTRIGHT = 16,
 
-    ADDITION = 24,
-    SUBTRACTION = 25,
+    // MATH
+    ADDITION = 17,
+    SUBTRACTION = 18,
 
-    MULTIPLICATION = 26,
-    DIVISION = 27,
-    FLOOR_DIV = 28,
-    REMAINDER = 29,
+    MULTIPLICATION = 19,
+    DIVISION = 20,
+    FLOOR_DIV = 21,
+    REMAINDER = 22,
 
-    EXPONENTIATION = 30,
+    EXPONENTIATION = 23,
+
+    DOT = 24, // Technically a binary op
+
+    // KEYWORDS
+    RETURN = 25,
+    YIELD = 26,
+    RAISE = 27,
+    GLOBAL = 28,
+    NONLOCAL = 29,
+    IF = 30,
+    ELIF = 31,
+    ELSE = 32,
+    DEF = 33,
+    CLASS = 34,
+    WHILE = 35,
+    FOR = 36,
+    TRY = 37,
+    EXCEPT = 38,
+    FINALLY = 39,
+    AS = 40,
+    PASS = 41,
+    BREAK = 42,
+    CONTINUE = 43,
 
     // ATOMS
-    IDENTIFIER = 31,
-    INT_LIT = 32,
-    FLOAT_LIT = 33,
-    STRING_LIT = 34,
-    NONE = 35,
-    TRUE = 36,
-    FALSE = 37,
+    IDENTIFIER = 44,
+    INT_LIT = 45,
+    FLOAT_LIT = 46,
+    STRING_LIT = 47,
+    NONE = 48,
+    BOOL_TRUE = 49,
+    BOOL_FALSE = 50,
 
-    RETURN = 38,
-    RAISE = 39,
-    GLOBAL = 40,
-    NONLOCAL = 41,
-
-    //FILE
-    FILE = 42,
-    ENDFILE = 43,
-    ERROR = 44
+    // MISC
+    OPEN_PAREN = 51,
+    CLOSED_PAREN = 52,
+    SQUARE_OPEN_PAREN = 53,
+    SQUARE_CLOSED_PAREN = 54,
+    CURLY_OPEN_PAREN = 55,
+    CURLY_CLOSED_PAREN = 56,
+    COMMA = 57,
+    ASSIGN = 58,
+    COLON = 59,
+    ARROW = 60,
+    AT = 61,
+    IMPORT = 62,
+    NEWLINE = 63,
+    INDENT = 64,
+    DEDENT = 65,
+    // FILE
+    FILE = 66,
+    ENDFILE = 67,
 };
 
 struct Token {
-    TokenType type;
+    enum TokenType type = TokenType::OR;
     uint32_t line = 0;
     uint32_t column = 0;
     std::string value = "";
 
-    TokenType precendence();
+    int precedence();
     bool is_binary_op();
-    bool is_atom();
-    std::string debug_to_string();
+    bool is_literal();
+    bool is_comparrison_op();
+    bool is_num();
 };
 
-struct TokenStream {
-    uint32_t position = 0;
-    std::vector<Token> &tokens;
-
-    TokenStream(std::vector<Token> &t) : tokens(t) {
-        this->position = 0;
-    }
-
-    inline Token *peek(uint32_t ahead);
-    inline Token *next_token();
-};
 
 struct InputStream {
-    uint32_t position = 0;
-    char *contents = nullptr;
+    int32_t position = 0;
+    char *contents;
     uint64_t size = 0;
     uint32_t col = 0;
-    uint32_t line = 0;
-
-    InputStream();
+    uint32_t line = 1;
 
     static InputStream create_from_file(const char *filename);
-    InputStream(const InputStream &source);
-    const InputStream& operator=(const InputStream& rval) {
-        delete[] this->contents;
-
-        this->position = rval.position;
-        this->contents = new char[rval.size];
-        memcpy(this->contents, rval.contents, rval.size);
-        this->size = rval.size;
-        this->col = rval.col;
-        this->line = rval.line;
-
-        return *this;
- }
-
-    ~InputStream() {
-        delete[] this->contents;
-    }
+    void destroy();
 
     inline char peek(uint32_t ahead);
     inline char next_char();
 };
 
-void tokenise_file(InputStream *input, std::vector<Token> *tokens);
+struct Tokeniser {
+    InputStream *stream;
+    Token last_returned;
+    Token lookahead;
+    uint32_t indent_level = 0;
+    uint32_t dedents_to_process = 0;
+
+    static Tokeniser init(InputStream *stream);
+    Token next_token();
+    //
+    // get_next_token will return the next lookahead token not the next token for the parser
+    Token get_next_lookahead();
+};
+
+std::string debug_token_type_to_string(enum TokenType type);
 #endif // TOKENISER_H_
