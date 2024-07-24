@@ -1,5 +1,4 @@
 build/
-build.bat
 *.json
 *.pdb
 .vs/
