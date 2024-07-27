@@ -197,6 +197,22 @@ static void debug_print_parse_tree(AstNode *node, uint32_t indent) {
 
     } break;
 
+    case AstNodeType::WITH_ITEM: {
+        debug_print_parse_tree(node->with_item.expression, indent+1);
+        debug_print_parse_tree(node->with_item.target, indent+1);
+    } break;
+
+    case AstNodeType::WITH: {
+        AstNode *items = node->with_statement.items;
+        while (items) {
+            debug_print_parse_tree(items, indent+1);
+            items = items->adjacent_child;
+        }
+
+        debug_print_parse_tree(node->with_statement.block, indent+1);
+
+    } break;
+
     case AstNodeType::EXCEPT:
         debug_print_parse_tree(node->except.expression, indent+1);
         debug_print_parse_tree(node->except.block, indent+1);
@@ -351,28 +367,23 @@ inline CompilerTables CompilerTables::init(Arena *arena) {
     return compiler_tables;
 }
 
-static inline AstNode *node_alloc(Arena *ast_arena, AstNode *node,
-                                  SymbolTableEntry *scope) {
+static inline AstNode *node_alloc(Arena *ast_arena, AstNode *node) {
 
     AstNode *allocated_node = (AstNode *)ast_arena->alloc(sizeof(AstNode));
 
     // call constructor because AstNode contains std::string .....
     *allocated_node = AstNode();
     *allocated_node = *node;
-    allocated_node->scope = scope;
 
     return allocated_node;
 }
 
 static inline AstNode *parse_single_token_into_node(Tokeniser *tokeniser,
-                                                    Arena *ast_arena,
-                                                    SymbolTableEntry *scope,
-                                                    CompilerTables *compiler_tables,
-                                                    Arena *symbol_table_arena) {
+                                                    Arena *ast_arena) {
     AstNode node = {};
     node.token = tokeniser->last_returned;
     tokeniser->next_token();
-    return node_alloc(ast_arena, &node, scope);
+    return node_alloc(ast_arena, &node);
 }
 
 inline AstNode AstNode::create_unary(Token token, AstNode *child) {
@@ -412,8 +423,7 @@ static inline void assert_token_and_print_debug(enum TokenType type,
     }
 }
 
-static inline AstNode *parse_name(Tokeniser *tokeniser, Arena *ast_arena,
-                                  SymbolTableEntry *scope, CompilerTables *compiler_tables, Arena *symbol_table_arena) {
+static inline AstNode *parse_name(Tokeniser *tokeniser, Arena *ast_arena) {
 
     assert_token_and_print_debug(TokenType::IDENTIFIER,
                                  tokeniser->last_returned,
@@ -421,30 +431,27 @@ static inline AstNode *parse_name(Tokeniser *tokeniser, Arena *ast_arena,
     AstNode child = {};
     child.token = tokeniser->last_returned;
     tokeniser->next_token();
-    return node_alloc(ast_arena, &child, scope);
+    return node_alloc(ast_arena, &child);
 }
 
 static AstNode *parse_list_of_names_and_return_modifier(Tokeniser *tokeniser,
                                                         Arena *ast_arena,
-                                                        SymbolTableEntry *scope,
-                                                        CompilerTables *compiler_tables,
-                                                        Arena *symbol_table_arena,
                                                         Token token) {
 
     AstNode parent = {};
     parent.type = AstNodeType::NARY;
     parent.token = token;
-    AstNode *current_child = parse_name(tokeniser, ast_arena, scope, compiler_tables, symbol_table_arena); // parse first child
+    AstNode *current_child = parse_name(tokeniser, ast_arena); // parse first child
     AstNode *head_child = current_child;
     while (tokeniser->last_returned.type == TokenType::COMMA) {
         tokeniser->next_token();
-        AstNode *name = parse_name(tokeniser, ast_arena, scope, compiler_tables, symbol_table_arena);
+        AstNode *name = parse_name(tokeniser, ast_arena);
         current_child->adjacent_child = name;
         current_child = current_child->adjacent_child;
     }
 
     parent.nary.children = head_child;
-    return node_alloc(ast_arena, &parent, scope);
+    return node_alloc(ast_arena, &parent);
 }
 
 // TODO find out whether or not it would be better to store starred targets as
@@ -458,7 +465,7 @@ static AstNode *parse_star_target(Tokeniser *tokeniser, Arena *ast_arena,
         starred_target.type = AstNodeType::STARRED;
         starred_target.star_expression.expression = parse_primary(tokeniser, ast_arena, scope, compiler_tables, symbol_table_arena);
 
-        return node_alloc(ast_arena, &starred_target, scope);
+        return node_alloc(ast_arena, &starred_target);
     }
 
     return parse_primary(tokeniser, ast_arena, scope, compiler_tables, symbol_table_arena);
@@ -480,7 +487,7 @@ static AstNode *parse_function_call_arguments(Tokeniser *tokeniser,
                                               SymbolTableEntry *scope,
                                               CompilerTables *compiler_tables,
                                               Arena *symbol_table_arena) {
-    AstNode *args_head;
+    AstNode *args_head = nullptr;
     AstNode **arg = &args_head;
     while (tokeniser->last_returned.type != TokenType::CLOSED_PAREN) {
         if (tokeniser->last_returned.type == TokenType::NEWLINE) {
@@ -496,7 +503,7 @@ static AstNode *parse_function_call_arguments(Tokeniser *tokeniser,
 
             AstNode kwarg = {};
             kwarg.token = tokeniser->last_returned;
-            kwarg.kwarg.name = parse_name(tokeniser, ast_arena, scope, compiler_tables, symbol_table_arena);
+            kwarg.kwarg.name = parse_name(tokeniser, ast_arena);
             kwarg.kwarg.expression = parse_expression(tokeniser, ast_arena, scope, compiler_tables, symbol_table_arena, 0);
 
             if (!(kwarg.kwarg.expression)) {
@@ -506,7 +513,7 @@ static AstNode *parse_function_call_arguments(Tokeniser *tokeniser,
               break;
             }
 
-            *arg = node_alloc(ast_arena, &kwarg, scope);
+            *arg = node_alloc(ast_arena, &kwarg);
         }
 
         else {
@@ -526,7 +533,7 @@ static AstNode *parse_function_call_arguments(Tokeniser *tokeniser,
         }
 
 
-        assert_comma_and_skip_over(tokeniser, ast_arena);
+        assert_comma_and_skip_over(tokeniser);
         arg = &((*arg)->adjacent_child);
     }
 
@@ -573,11 +580,11 @@ static AstNode *parse_sub_primary(Tokeniser *tokeniser, Arena *ast_arena,
 
         attribute_ref.type = AstNodeType::ATTRIBUTE_REF;
         attribute_ref.attribute_ref.attribute =
-            node_alloc(ast_arena, &attribute, scope);
+            node_alloc(ast_arena, &attribute);
 
         attribute_ref.attribute_ref.name = left;
         tokeniser->next_token();
-        return node_alloc(ast_arena, &attribute_ref, scope);
+        return node_alloc(ast_arena, &attribute_ref);
     }
 
     else if (current_token.type == TokenType::OPEN_PAREN) {
@@ -591,8 +598,7 @@ static AstNode *parse_sub_primary(Tokeniser *tokeniser, Arena *ast_arena,
                                                                 compiler_tables, symbol_table_arena);
 
         call.function_call.expression = left;
-        tokeniser->next_token();
-        left = node_alloc(ast_arena, &call, scope);
+        left = node_alloc(ast_arena, &call);
         return parse_sub_primary(tokeniser, ast_arena, left, scope, compiler_tables, symbol_table_arena);
     }
 
@@ -625,7 +631,7 @@ static AstNode *parse_sub_primary(Tokeniser *tokeniser, Arena *ast_arena,
 
 
         subscript_proper->expression = left;
-        left = node_alloc(ast_arena, &subscript, scope);
+        left = node_alloc(ast_arena, &subscript);
         return parse_sub_primary(tokeniser, ast_arena, left, scope, compiler_tables, symbol_table_arena);
     }
 
@@ -648,7 +654,7 @@ static AstNode *parse_else(Tokeniser *tokeniser, Arena *ast_arena, SymbolTableEn
             tokeniser->next_token(); // skip the colon
 
             else_node_proper->block  = parse_block(tokeniser, ast_arena, scope, compiler_tables, symbol_table_arena);
-            return node_alloc(ast_arena, &else_node, scope);
+            return node_alloc(ast_arena, &else_node);
         }
 
         default:
@@ -676,7 +682,7 @@ static AstNode *parse_elif(Tokeniser *tokeniser, Arena *ast_arena, SymbolTableEn
 
             elif_proper->block = parse_block(tokeniser, ast_arena, scope, compiler_tables, symbol_table_arena);
             elif_proper->or_else = parse_elif(tokeniser, ast_arena, scope, compiler_tables, symbol_table_arena);
-            return node_alloc(ast_arena, &elif, scope);
+            return node_alloc(ast_arena, &elif);
         }
 
         default:
@@ -684,7 +690,7 @@ static AstNode *parse_elif(Tokeniser *tokeniser, Arena *ast_arena, SymbolTableEn
     }
 }
 
-static inline void assert_comma_and_skip_over(Tokeniser *tokeniser, Arena *ast_arena) {
+static inline void assert_comma_and_skip_over(Tokeniser *tokeniser) {
     assert_token_and_print_debug(
         TokenType::COMMA, tokeniser->last_returned,
         "Function parameters must be seperated by commas");
@@ -709,19 +715,19 @@ static AstNode *parse_function_def_arguments(Tokeniser *tokeniser, Arena *ast_ar
             }
 
             tokeniser->next_token();
-            function->star = parse_name(tokeniser, ast_arena, scope, compiler_tables, symbol_table_arena);
+            function->star = parse_name(tokeniser, ast_arena);
 
             if (tokeniser->last_returned.type == TokenType::CLOSED_PAREN) {
                 break;
             }
 
-            assert_comma_and_skip_over(tokeniser, ast_arena);
+            assert_comma_and_skip_over(tokeniser);
         }
 
         // **kwargs
         if (tokeniser->last_returned.type == TokenType::EXPONENTIATION) {
             tokeniser->next_token();
-            function->double_star = parse_name(tokeniser, ast_arena, scope, compiler_tables, symbol_table_arena);
+            function->double_star = parse_name(tokeniser, ast_arena);
             assert_token_and_print_debug(
                 TokenType::CLOSED_PAREN, tokeniser->last_returned,
                 "** arguments cannot be followed by any additional arguments");
@@ -729,9 +735,8 @@ static AstNode *parse_function_def_arguments(Tokeniser *tokeniser, Arena *ast_ar
         }
 
         AstNodeDeclaration *param_proper = &argument_node.declaration;
-        param_proper->name = parse_name(tokeniser, ast_arena, scope, compiler_tables, symbol_table_arena);
+        param_proper->name = parse_name(tokeniser, ast_arena);
         SymbolTableValue value = {};
-        value.symbol_type = SymbolType::VARIABLE;
         compiler_tables->function_table->insert(symbol_table_arena,
                              param_proper->name->token.value, scope,
                              value);
@@ -751,14 +756,14 @@ static AstNode *parse_function_def_arguments(Tokeniser *tokeniser, Arena *ast_ar
             param_proper->expression = parse_expression(tokeniser, ast_arena, scope, compiler_tables, symbol_table_arena, 0);
         }
 
-        *arg = node_alloc(ast_arena, &argument_node, scope);
+        *arg = node_alloc(ast_arena, &argument_node);
         arg = &((*arg)->adjacent_child);
 
         if (tokeniser->last_returned.type == TokenType::CLOSED_PAREN) {
             break;
         }
 
-        assert_comma_and_skip_over(tokeniser, ast_arena);
+        assert_comma_and_skip_over(tokeniser);
     }
 
     tokeniser->next_token();
@@ -800,7 +805,7 @@ static AstNode *parse_block(Tokeniser *tokeniser, Arena *ast_arena, SymbolTableE
     }
 
     tokeniser->next_token();
-    return node_alloc(ast_arena, &block, scope);
+    return node_alloc(ast_arena, &block);
 }
 
 static AstNode *parse_assignment_expression(Tokeniser *tokeniser, Arena *ast_arena, SymbolTableEntry *scope, CompilerTables *compiler_tables, Arena *symbol_table_arena) {
@@ -812,12 +817,12 @@ static AstNode *parse_assignment_expression(Tokeniser *tokeniser, Arena *ast_are
 
         node.type = AstNodeType::ASSIGNMENT;
         AstNodeAssignment *assignment = &node.assignment;
-        assignment->name = parse_name(tokeniser, ast_arena, scope, compiler_tables, symbol_table_arena);
+        assignment->name = parse_name(tokeniser, ast_arena);
         assert_token_and_print_debug(TokenType::ASSIGN, tokeniser->next_token(),
                                      "\nError in parsing assignment on line: ");
         tokeniser->next_token();
         assignment->expression = parse_expression(tokeniser, ast_arena, scope, compiler_tables, symbol_table_arena, 0);
-        return node_alloc(ast_arena, &node, scope);
+        return node_alloc(ast_arena, &node);
     }
 
     else {
@@ -861,7 +866,7 @@ static AstNode *parse_single_double_starred_kvpair(Tokeniser *tokeniser,
         doule_starred_proper->expression =
             parse_bitwise_or_minimum_precedence(tokeniser, ast_arena, scope, compiler_tables, symbol_table_arena, 0);
 
-        return node_alloc(ast_arena, &double_starred, scope);
+        return node_alloc(ast_arena, &double_starred);
     }
 
     else {
@@ -877,7 +882,7 @@ static AstNode *parse_single_double_starred_kvpair(Tokeniser *tokeniser,
         tokeniser->next_token();
         kvpair_proper->value = parse_expression(tokeniser, ast_arena, scope, compiler_tables, symbol_table_arena, 0);
 
-        return node_alloc(ast_arena, &kvpair, scope);
+        return node_alloc(ast_arena, &kvpair);
     }
 }
 
@@ -905,7 +910,7 @@ static AstNode *parse_for_if_clause(Tokeniser *tokeniser, Arena *ast_arena, Symb
         for_if_proper->if_clause = parse_expression(tokeniser, ast_arena, scope, compiler_tables, symbol_table_arena, 0);
     }
 
-    return node_alloc(ast_arena, &for_if, scope);
+    return node_alloc(ast_arena, &for_if);
 }
 
 static AstNode *parse_atom(Tokeniser *tokeniser, Arena *ast_arena, SymbolTableEntry *scope, CompilerTables *compiler_tables, Arena *symbol_table_arena) {
@@ -934,14 +939,14 @@ static AstNode *parse_atom(Tokeniser *tokeniser, Arena *ast_arena, SymbolTableEn
                                      tokeniser->last_returned,
                                      "Mismatched parenthesis in list");
         tokeniser->next_token();
-        return node_alloc(ast_arena, &node, scope);
+        return node_alloc(ast_arena, &node);
     }
 
     else if (tokeniser->last_returned.type == TokenType::OPEN_PAREN) {
         node.token = tokeniser->last_returned;
         node.type = AstNodeType::TUPLE;
         node.nary.children = parse_assignment_star_expressions(tokeniser, ast_arena, scope, compiler_tables, symbol_table_arena);
-        return node_alloc(ast_arena, &node, scope);
+        return node_alloc(ast_arena, &node);
     }
 
     else if (tokeniser->last_returned.type == TokenType::CURLY_OPEN_PAREN) {
@@ -954,7 +959,7 @@ static AstNode *parse_atom(Tokeniser *tokeniser, Arena *ast_arena, SymbolTableEn
 
         if (tokeniser->last_returned.type == TokenType::EXPONENTIATION) {
             node.nary.children = parse_double_starred_kvpairs(tokeniser, ast_arena, scope, compiler_tables, symbol_table_arena);
-            return node_alloc(ast_arena, &node, scope);
+            return node_alloc(ast_arena, &node);
         }
 
 
@@ -1032,8 +1037,8 @@ static AstNode *parse_atom(Tokeniser *tokeniser, Arena *ast_arena, SymbolTableEn
             }
         }
 
-        node.nary.children = node_alloc(ast_arena, &first_child, scope);
-        return node_alloc(ast_arena, &node, scope);
+        node.nary.children = node_alloc(ast_arena, &first_child);
+        return node_alloc(ast_arena, &node);
     }
 
     else if (tokeniser->last_returned.is_literal()) {
@@ -1041,14 +1046,13 @@ static AstNode *parse_atom(Tokeniser *tokeniser, Arena *ast_arena, SymbolTableEn
         if (node.token.type == TokenType::IDENTIFIER) {
 
             SymbolTableValue value = {};
-            value.symbol_type = SymbolType::VARIABLE;
             value.static_type.type = TypeInfoType::UNKNOWN;
 
         }
 
         tokeniser->next_token();
 
-        return node_alloc(ast_arena, &node, scope);
+        return node_alloc(ast_arena, &node);
     }
 
     else {
@@ -1070,7 +1074,7 @@ static inline AstNode *parse_left(Tokeniser *tokeniser, Arena *ast_arena, Symbol
             tokeniser->next_token();
             tuple.nary.children = left;
             left->adjacent_child = parse_assignment_star_expressions(tokeniser, ast_arena, scope, compiler_tables, symbol_table_arena);
-            left = node_alloc(ast_arena, &tuple, scope);
+            left = node_alloc(ast_arena, &tuple);
         }
 
         // parse assignment_expression_into_tuple
@@ -1086,10 +1090,10 @@ static inline AstNode *parse_left(Tokeniser *tokeniser, Arena *ast_arena, Symbol
             assignment_proper->name = left;
             assignment_proper->expression = parse_expression(tokeniser, ast_arena, scope, compiler_tables, symbol_table_arena, 0);
 
-            tuple.nary.children = node_alloc(ast_arena, &assignment, scope);
+            tuple.nary.children = node_alloc(ast_arena, &assignment);
             left->adjacent_child = parse_assignment_star_expressions(tokeniser, ast_arena, scope, compiler_tables, symbol_table_arena);
 
-            left = node_alloc(ast_arena, &tuple, scope);
+            left = node_alloc(ast_arena, &tuple);
         }
 
         // parse as if it was an expression that has just been bracketed
@@ -1153,7 +1157,7 @@ static AstNode *parse_inc_precedence_minimum_bitwise_or_precedence(Tokeniser *to
 
         AstNode binary_op_node = AstNode::create_binary(current_token,
                                                         left, right);
-        return node_alloc(ast_arena, &binary_op_node, scope);
+        return node_alloc(ast_arena, &binary_op_node);
     }
 
     else {
@@ -1230,7 +1234,7 @@ static AstNode *parse_increasing_precedence(Tokeniser *tokeniser, Arena *ast_are
 
         AstNode binary_op_node = AstNode::create_binary(current_token,
                                                         left, right);
-        return node_alloc(ast_arena, &binary_op_node, scope);
+        return node_alloc(ast_arena, &binary_op_node);
     }
 
     else {
@@ -1261,14 +1265,14 @@ static AstNode *parse_expression(Tokeniser *tokeniser, Arena *ast_arena,
 }
 
 static AstNode *parse_assignment(Tokeniser *tokeniser, Arena *ast_arena,
-                                 SymbolTableEntry *scope, CompilerTables *compiler_tables, Arena *symbol_table_arena) {
+                                 SymbolTableEntry *scope, CompilerTables *compiler_tables, Arena *symbol_table_arena, AstNode *left) {
     AstNode node = {};
     node.token = tokeniser->last_returned;
 
-    if (tokeniser->lookahead.type == TokenType::ASSIGN) {
+    if (tokeniser->last_returned.type == TokenType::ASSIGN) {
         node.type = AstNodeType::ASSIGNMENT;
         AstNodeAssignment *assignment = &node.assignment;
-        assignment->name = parse_name(tokeniser, ast_arena, scope, compiler_tables, symbol_table_arena);
+        assignment->name = left;
 
         assert_token_and_print_debug(
             TokenType::ASSIGN, tokeniser->last_returned,
@@ -1278,14 +1282,13 @@ static AstNode *parse_assignment(Tokeniser *tokeniser, Arena *ast_arena,
         assignment->expression = parse_expression(tokeniser, ast_arena, scope, compiler_tables, symbol_table_arena, 0);
     }
 
-    else if (tokeniser->lookahead.type == TokenType::COLON) {
+    else if (tokeniser->last_returned.type == TokenType::COLON) {
         node.type = AstNodeType::DECLARATION;
         AstNodeDeclaration *declaration = &node.declaration;
-        declaration->name = parse_name(tokeniser, ast_arena, scope, compiler_tables, symbol_table_arena);
+        declaration->name = left;
 
         SymbolTableValue value = {};
-        value.symbol_type = SymbolType::VARIABLE;
-        compiler_tables->variable_table->insert(symbol_table_arena,
+        SymbolTableEntry *entry = compiler_tables->variable_table->insert(symbol_table_arena,
                                                 declaration->name->token.value,
                                                 scope, value);
 
@@ -1298,7 +1301,7 @@ static AstNode *parse_assignment(Tokeniser *tokeniser, Arena *ast_arena,
         }
     }
 
-    return node_alloc(ast_arena, &node, scope);
+    return node_alloc(ast_arena, &node);
 }
 
 static inline AstNode *parse_next_star_expression_into_child(
@@ -1310,13 +1313,13 @@ static inline AstNode *parse_next_star_expression_into_child(
     tokeniser->next_token();
     if (tokeniser->last_returned.type == TokenType::NEWLINE) {
         AstNode node = AstNode::create_unary(current_token, nullptr);
-        return node_alloc(ast_arena, &node, scope);
+        return node_alloc(ast_arena, &node);
     }
 
     AstNode *child = parse_star_expression(tokeniser, ast_arena, scope, compiler_tables, symbol_table_arena);
     AstNode node = AstNode::create_unary(current_token, child);
 
-    return node_alloc(ast_arena, &node, scope);
+    return node_alloc(ast_arena, &node);
 }
 
 static inline AstNode *parse_next_single_star_expression_into_child(
@@ -1328,13 +1331,13 @@ static inline AstNode *parse_next_single_star_expression_into_child(
     tokeniser->next_token();
     if (tokeniser->last_returned.type == TokenType::NEWLINE) {
         AstNode node = AstNode::create_unary(current_token, nullptr);
-        return node_alloc(ast_arena, &node, scope);
+        return node_alloc(ast_arena, &node);
     }
 
     AstNode *child = parse_star_expression(tokeniser, ast_arena, scope, compiler_tables, symbol_table_arena);
     AstNode node = AstNode::create_unary(current_token, child);
 
-    return node_alloc(ast_arena, &node, scope);
+    return node_alloc(ast_arena, &node);
 }
 
 static inline AstNode *parse_next_star_expressions_into_children(Tokeniser *tokeniser,
@@ -1365,10 +1368,10 @@ static inline AstNode *parse_next_star_expressions_into_children(Tokeniser *toke
             next_child = next_child->adjacent_child;
         }
 
-        node.unary.child = node_alloc(ast_arena, &tuple, scope);
+        node.unary.child = node_alloc(ast_arena, &tuple);
     }
 
-    return node_alloc(ast_arena, &node, scope);;
+    return node_alloc(ast_arena, &node);;
 }
 
 static AstNode *parse_function_def(Tokeniser *tokeniser, Arena *ast_arena, SymbolTableEntry *scope, CompilerTables *compiler_tables, Arena *symbol_table_arena) {
@@ -1380,9 +1383,8 @@ static AstNode *parse_function_def(Tokeniser *tokeniser, Arena *ast_arena, Symbo
     assert_token_and_print_debug(TokenType::IDENTIFIER, tokeniser->next_token(),
                                  "\n Error parsing function definition");
 
-    function_proper->name = parse_name(tokeniser, ast_arena, scope, compiler_tables, symbol_table_arena);
+    function_proper->name = parse_name(tokeniser, ast_arena);
     SymbolTableValue value = {};
-    value.symbol_type = SymbolType::FUNCTION;
     value.static_type.type = TypeInfoType::UNKNOWN;
 
     compiler_tables->function_table->insert(
@@ -1414,13 +1416,14 @@ static AstNode *parse_function_def(Tokeniser *tokeniser, Arena *ast_arena, Symbo
     function_proper->block = parse_block(tokeniser, ast_arena, scope, compiler_tables, symbol_table_arena);
     scope = last_scope;
 
-    return node_alloc(ast_arena, &node, scope);
+    return node_alloc(ast_arena, &node);
 }
+
 static AstNode *parse_dotted_name(Tokeniser *tokeniser, Arena *ast_arena,
                                   SymbolTableEntry *scope, CompilerTables *compiler_tables,
                                   Arena *symbol_table_arena) {
 
-    AstNode *left = parse_name(tokeniser, ast_arena, scope, compiler_tables, symbol_table_arena);
+    AstNode *left = parse_name(tokeniser, ast_arena);
     AstNode *right;
     Token next_token = tokeniser->last_returned;
     if (next_token.type == TokenType::DOT) {
@@ -1433,7 +1436,26 @@ static AstNode *parse_dotted_name(Tokeniser *tokeniser, Arena *ast_arena,
     }
 
     AstNode binary = AstNode::create_binary(next_token, left, right);
-    return node_alloc(ast_arena, &binary, scope);
+    return node_alloc(ast_arena, &binary);
+}
+static AstNode *parse_with_item(Tokeniser *tokeniser, Arena *ast_arena,
+                                SymbolTableEntry *scope,
+                                CompilerTables *compiler_tables,
+                                Arena *symbol_table_arena) {
+
+    AstNode with_item = {};
+    with_item.type = AstNodeType::WITH_ITEM;
+    with_item.token = tokeniser->last_returned;
+    with_item.with_item.expression = parse_expression(
+        tokeniser, ast_arena, scope, compiler_tables, symbol_table_arena, 0);
+
+    if (tokeniser->last_returned.type == TokenType::AS) {
+        tokeniser->next_token();
+        with_item.with_item.target = parse_star_target(
+            tokeniser, ast_arena, scope, compiler_tables, symbol_table_arena);
+    }
+
+    return node_alloc(ast_arena, &with_item);
 }
 
 static AstNode *parse_class_def(Tokeniser *tokeniser, Arena *ast_arena,
@@ -1450,13 +1472,18 @@ static AstNode *parse_class_def(Tokeniser *tokeniser, Arena *ast_arena,
     assert_token_and_print_debug(TokenType::IDENTIFIER, tokeniser->next_token(),
                                  "\n Error parsing class_node definition");
 
-    class_node->name = parse_name(tokeniser, ast_arena, scope, compiler_tables, symbol_table_arena);
+    class_node->name = parse_name(tokeniser, ast_arena);
     SymbolTableValue value = {};
-    value.symbol_type = SymbolType::CLASS;
-    value.symbol_type = SymbolType::CLASS;
-    compiler_tables->class_table->insert(symbol_table_arena,
+    value.static_type.type = TypeInfoType::CUSTOM;
+    SymbolTableEntry *entry = compiler_tables->class_table->insert(symbol_table_arena,
                          class_node->name->token.value,
                          scope, value);
+
+    // cutsom type value referes to its own entry
+    // so that when the symbol table is queried for typing it can update other custom types
+    // with this pointer value back to the original declaration
+    entry->value.static_type.custom_symbol = entry;
+
 
     if ( tokeniser->last_returned.type == TokenType::OPEN_PAREN) {
         class_node->arguments = parse_function_call_arguments(tokeniser, ast_arena, scope, compiler_tables, symbol_table_arena);
@@ -1473,7 +1500,7 @@ static AstNode *parse_class_def(Tokeniser *tokeniser, Arena *ast_arena,
             tokeniser, ast_arena, scope, compiler_tables, symbol_table_arena);
     scope = last_scope;
 
-    return node_alloc(ast_arena, &node, scope);
+    return node_alloc(ast_arena, &node);
 }
 
 static AstNode *parse_statement(Tokeniser *tokeniser, Arena *ast_arena,
@@ -1492,11 +1519,17 @@ static AstNode *parse_statement(Tokeniser *tokeniser, Arena *ast_arena,
     switch (current_token.type) {
 
         case TokenType::IDENTIFIER: {
-            if (tokeniser->lookahead.type != TokenType::COLON) {
-                return parse_expression(tokeniser, ast_arena, scope, compiler_tables, symbol_table_arena, 0);
+            AstNode *left = parse_primary(tokeniser, ast_arena, scope, compiler_tables, symbol_table_arena);
+            if (tokeniser->last_returned.type == TokenType::COLON ||
+                tokeniser->last_returned.type == TokenType::ASSIGN) {
+
+                return parse_assignment(tokeniser, ast_arena, scope,
+                                        compiler_tables, symbol_table_arena, left);
             }
 
-            return parse_assignment(tokeniser, ast_arena, scope, compiler_tables, symbol_table_arena);
+            return parse_increasing_precedence(tokeniser, ast_arena, left,
+                                               scope, compiler_tables,
+                                               symbol_table_arena, 0);
 
         } break;
 
@@ -1508,7 +1541,7 @@ static AstNode *parse_statement(Tokeniser *tokeniser, Arena *ast_arena,
 
             if (tokeniser->last_returned.type == TokenType::AS) {
                 tokeniser->next_token();
-                import_node->as = parse_name(tokeniser, ast_arena, scope, compiler_tables, symbol_table_arena);
+                import_node->as = parse_name(tokeniser, ast_arena);
             }
 
         } break;
@@ -1627,7 +1660,7 @@ static AstNode *parse_statement(Tokeniser *tokeniser, Arena *ast_arena,
                     except_proper->expression = parse_expression(tokeniser, ast_arena, scope, compiler_tables, symbol_table_arena, 0);
 
                     if (tokeniser->last_returned.type == TokenType::AS) {
-                        parse_name(tokeniser, ast_arena, scope, compiler_tables, symbol_table_arena);
+                        parse_name(tokeniser, ast_arena);
                     }
 
                     assert_token_and_print_debug(
@@ -1638,7 +1671,7 @@ static AstNode *parse_statement(Tokeniser *tokeniser, Arena *ast_arena,
                 tokeniser->next_token();
                 except_proper->block = parse_block(tokeniser, ast_arena, scope, compiler_tables, symbol_table_arena);
 
-                *handler = node_alloc(ast_arena, &except, scope);
+                *handler = node_alloc(ast_arena, &except);
                 handler = &((*handler)->adjacent_child);
             }
 
@@ -1656,6 +1689,36 @@ static AstNode *parse_statement(Tokeniser *tokeniser, Arena *ast_arena,
             }
 
         } break;
+
+        case TokenType::WITH: {
+            AstNode with_node = {};
+            with_node.type = AstNodeType::WITH;
+            with_node.token = tokeniser->last_returned;
+            tokeniser->next_token();
+
+            AstNode *child =
+                parse_with_item(tokeniser, ast_arena, scope, compiler_tables,
+                                symbol_table_arena);
+
+            with_node.with_statement.items = child;
+
+            while (tokeniser->last_returned.type == TokenType::COMMA) {
+                child->adjacent_child =
+                    parse_with_item(tokeniser, ast_arena, scope,
+                                    compiler_tables, symbol_table_arena);
+                child = child->adjacent_child;
+            }
+            assert_token_and_print_debug(
+                TokenType::COLON, tokeniser->last_returned,
+                "expected colon after end of with statemnt");
+
+            tokeniser->next_token();
+            with_node.with_statement.block =
+                parse_block(tokeniser, ast_arena, scope, compiler_tables,
+                            symbol_table_arena);
+
+            return node_alloc(ast_arena, &with_node);
+        }
 
         case TokenType::DEF: {
             return parse_function_def(tokeniser, ast_arena, scope, compiler_tables, symbol_table_arena);
@@ -1684,46 +1747,36 @@ static AstNode *parse_statement(Tokeniser *tokeniser, Arena *ast_arena,
                     symbol_table_arena);
             }
 
-            return node_alloc(ast_arena, &node, scope);
+            return node_alloc(ast_arena, &node);
         }
 
         case TokenType::GLOBAL: {
-            return parse_list_of_names_and_return_modifier(tokeniser,
-                                                           ast_arena,
-                                                           scope,
-                                                           compiler_tables,
-                                                           symbol_table_arena,
+            return parse_list_of_names_and_return_modifier(tokeniser, ast_arena,
                                                            current_token);
         }
 
         case TokenType::NONLOCAL: {
-            return parse_list_of_names_and_return_modifier(tokeniser,
-                                                           ast_arena,
-                                                           scope,
-                                                           compiler_tables,
-                                                           symbol_table_arena,
+            return parse_list_of_names_and_return_modifier(tokeniser, ast_arena,
                                                            current_token);
         }
 
         case TokenType::PASS: {
-            return parse_single_token_into_node(
-                tokeniser, ast_arena, scope, compiler_tables, symbol_table_arena);
+            return parse_single_token_into_node(tokeniser, ast_arena);
         }
 
         case TokenType::CONTINUE: {
-            return parse_single_token_into_node(
-                tokeniser, ast_arena, scope, compiler_tables, symbol_table_arena);
+            return parse_single_token_into_node(tokeniser, ast_arena);
         }
 
         case TokenType::BREAK: {
-            return parse_single_token_into_node(tokeniser, ast_arena, scope, compiler_tables, symbol_table_arena);
+            return parse_single_token_into_node(tokeniser, ast_arena);
         }
 
         default:
             return parse_star_expression(tokeniser, ast_arena, scope, compiler_tables, symbol_table_arena);
     }
 
-    return node_alloc(ast_arena, &node, scope);
+    return node_alloc(ast_arena, &node);
 }
 
 static AstNode *parse_statements(Tokeniser *tokeniser, Arena *ast_arena,
@@ -1752,5 +1805,5 @@ static AstNode *parse_statements(Tokeniser *tokeniser, Arena *ast_arena,
 
     }
 
-    return node_alloc(ast_arena, &file_node, scope);
+    return node_alloc(ast_arena, &file_node);
 }

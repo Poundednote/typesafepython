@@ -117,7 +117,6 @@ int main(int argc, char *argv[]) {
     CompilerTables tables = CompilerTables::init(&symbol_table_arena);
 
     SymbolTableValue main_symbol_value = {};
-    main_symbol_value.symbol_type = SymbolType::FUNCTION;
     main_symbol_value.static_type.type = TypeInfoType::INTEGER;
 
     std::string main_identifier = "main";

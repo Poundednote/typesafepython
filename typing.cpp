@@ -1,15 +1,13 @@
 #include <stdio.h>
 #include "typing.h"
 
-
-
 static void fail_typing_with_debug(AstNode *node) {
     fprintf(stderr, "Invalid Types\n");
     debug_print_parse_tree(node, 0);
     exit(1);
 }
 
-static void scope_stack_push(Arena *scope_stack, SymbolTableEntry *value) {
+static inline void scope_stack_push(Arena *scope_stack, SymbolTableEntry *value) {
     SymbolTableEntry **new_scope =
         (SymbolTableEntry **)scope_stack->alloc(sizeof(SymbolTableEntry *));
     *new_scope = value;
@@ -17,6 +15,12 @@ static void scope_stack_push(Arena *scope_stack, SymbolTableEntry *value) {
 
 static inline void scope_stack_pop(Arena *scope_stack) {
     scope_stack->offset -= sizeof(SymbolTableEntry *);
+}
+
+static inline SymbolTableEntry *scope_stack_peek(Arena *scope_stack) {
+    return *((SymbolTableEntry **)(((char *)scope_stack->memory) +
+                                   scope_stack->offset -
+                                   sizeof(SymbolTableEntry *)));
 }
 
 static bool is_num_type(TypeInfo type_info) {
@@ -40,10 +44,13 @@ static bool recreate_binary_expresison_from_root(AstNode *root) {
 }
 */
 static bool find_symbol_definition_and_type(Arena *scope_stack, AstNode *node, SymbolTable *symbol_table) {
-    SymbolTableEntry *result = symbol_table->lookup(
-        node->token.value, node->scope);
+    SymbolTableEntry *result = nullptr;
 
-    for (int i = scope_stack->offset; i >= 0; i -= (sizeof(SymbolTableEntry *))) {
+    for (int i = (scope_stack->offset / sizeof(SymbolTableEntry *)) - 1;
+         i >= 0;
+         --i) {
+
+        assert(scope_stack->offset % sizeof(SymbolTableEntry *) == 0);
         if (result) {
           break;
         }
@@ -253,7 +260,10 @@ static int type_parse_tree(AstNode *node, Arena *scope_stack,
     case AstNodeType::FUNCTION_DEF: {
         type_parse_tree(node->function_def.return_type, scope_stack, compiler_tables);
 
-        scope_stack_push(scope_stack, node->function_def.block->scope);
+        SymbolTableEntry *new_scope = compiler_tables->function_table->lookup(
+            node->function_def.name->token.value, scope_stack_peek(scope_stack));
+        scope_stack_push(scope_stack, new_scope);
+
         type_parse_tree(node->function_def.block, scope_stack, compiler_tables);
         node->static_type = node->function_def.return_type->static_type;
 
@@ -267,9 +277,7 @@ static int type_parse_tree(AstNode *node, Arena *scope_stack,
             return 0;
         }
 
-        SymbolTableEntry *entry = compiler_tables->function_table->lookup(node->function_def.name->token.value,
-                             node->scope);
-        entry->value.static_type = node->function_def.return_type->static_type;
+        new_scope->value.static_type = node->function_def.return_type->static_type;
 
         scope_stack_pop(scope_stack);
 
@@ -285,8 +293,20 @@ static int type_parse_tree(AstNode *node, Arena *scope_stack,
         break;
     case AstNodeType::LISTCOMP:
         break;
-    case AstNodeType::ASSIGNMENT:
-        break;
+    case AstNodeType::ASSIGNMENT: {
+        type_parse_tree(node->assignment.name, scope_stack, compiler_tables);
+        type_parse_tree(node->assignment.expression, scope_stack, compiler_tables);
+        if (node->assignment.expression->static_type.type !=
+                node->assignment.name->static_type.type ||
+            node->assignment.expression->static_type.custom_symbol !=
+                node->assignment.name->static_type.custom_symbol) {
+
+            fprintf(stderr, "Assignment value miscmatched types\n");
+        }
+
+        node->static_type = node->assignment.name->static_type;
+
+    } break;
 
     case AstNodeType::BLOCK: {
     // Type is return statement if no return statemnt the type is None
@@ -334,9 +354,10 @@ static int type_parse_tree(AstNode *node, Arena *scope_stack,
             }
         }
 
-        SymbolTableEntry *entry = compiler_tables->variable_table->lookup(node->declaration.name->token.value,
-                             node->scope);
-        entry->value.static_type = node->declaration.annotation->static_type;
+        SymbolTableEntry *entry = compiler_tables->variable_table->lookup(
+            node->declaration.name->token.value, scope_stack_peek(scope_stack));
+        node->static_type = node->declaration.annotation->static_type;
+        entry->value.static_type = node->static_type;
     } break;
 
     case AstNodeType::IF: {
@@ -412,17 +433,26 @@ static int type_parse_tree(AstNode *node, Arena *scope_stack,
         break;
     case AstNodeType::FOR_IF:
         break;
-    case AstNodeType::CLASS_DEF:
-        break;
+    case AstNodeType::CLASS_DEF: {
+        SymbolTableEntry *new_scope = compiler_tables->class_table->lookup(
+            node->class_def.name->token.value, scope_stack_peek(scope_stack));
+        scope_stack_push(scope_stack, new_scope);
+
+        type_parse_tree(node->class_def.arguments, scope_stack, compiler_tables);
+        type_parse_tree(node->class_def.block, scope_stack, compiler_tables);
+
+        scope_stack_pop(scope_stack);
+
+    } break;
     case AstNodeType::FUNCTION_CALL:
         break;
     case AstNodeType::SUBSCRIPT:
         break;
     case AstNodeType::ATTRIBUTE_REF: {
         type_parse_tree(node->attribute_ref.name, scope_stack, compiler_tables);
-        //find symbol in class
 
-        SymbolTableEntry *result = compiler_tables->class_table->lookup(node->attribute_ref.attribute->token.value,
+        //find symbol in class
+        SymbolTableEntry *result = compiler_tables->variable_table->lookup(node->attribute_ref.attribute->token.value,
                                              node->attribute_ref.name->static_type.custom_symbol);
 
         if (!result) {
@@ -433,7 +463,9 @@ static int type_parse_tree(AstNode *node, Arena *scope_stack,
             exit(1);
         }
 
+        node->attribute_ref.attribute->static_type = result->value.static_type;
         node->static_type = node->attribute_ref.attribute->static_type;
+
     } break;
     case AstNodeType::TRY:
         break;

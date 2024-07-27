@@ -203,7 +203,6 @@ static Test floats_and_numbers_types_test() {
     CompilerTables tables = CompilerTables::init(&symbol_table_arena);
 
     SymbolTableValue main_symbol_value = {};
-    main_symbol_value.symbol_type = SymbolType::FUNCTION;
     main_symbol_value.static_type.type = TypeInfoType::INTEGER;
 
     std::string main_identifier = "main";
@@ -247,7 +246,6 @@ static Test ifelse_test() {
     CompilerTables tables = CompilerTables::init(&symbol_table_arena);
 
     SymbolTableValue main_symbol_value = {};
-    main_symbol_value.symbol_type = SymbolType::FUNCTION;
     main_symbol_value.static_type.type = TypeInfoType::INTEGER;
 
     std::string main_identifier = "main";
@@ -304,7 +302,6 @@ static Test functiondef_test() {
     CompilerTables tables = CompilerTables::init(&symbol_table_arena);
 
     SymbolTableValue main_symbol_value = {};
-    main_symbol_value.symbol_type = SymbolType::FUNCTION;
     main_symbol_value.static_type.type = TypeInfoType::INTEGER;
 
     std::string main_identifier = "main";
@@ -396,7 +393,6 @@ static Test precedence_test() {
     CompilerTables tables = CompilerTables::init(&symbol_table_arena);
 
     SymbolTableValue main_symbol_value = {};
-    main_symbol_value.symbol_type = SymbolType::FUNCTION;
     main_symbol_value.static_type.type = TypeInfoType::INTEGER;
 
     std::string main_identifier = "main";

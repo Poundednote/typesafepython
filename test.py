@@ -4,6 +4,7 @@ c: str = ""
 
 class Foo:
     bar: int = 4
+    baz: str = "hello"
 
 def first() -> str:
     while 1:
@@ -15,5 +16,10 @@ def first() -> str:
         1 + 1
         return "str"
 
-foo: Foo
-foo.bar
+def second() -> int:
+    foo: Foo
+    return foo.baz
+
+
+with fopen() as file:
+    1 + 1

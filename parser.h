@@ -61,7 +61,6 @@ struct SymbolTableKey {
 
 struct SymbolTableValue {
     TypeInfo static_type;
-    SymbolType symbol_type;
 };
 
 struct SymbolTableEntry {
@@ -113,10 +112,12 @@ enum class AstNodeType {
     SUBSCRIPT = 22,
     ATTRIBUTE_REF = 23,
     TRY = 24,
-    EXCEPT = 25,
-    STARRED = 26,
-    KVPAIR = 27,
-    IMPORT = 28,
+    WITH = 25,
+    WITH_ITEM = 26,
+    EXCEPT = 27,
+    STARRED = 28,
+    KVPAIR = 29,
+    IMPORT = 30,
 };
 
 struct AstNode;
@@ -226,6 +227,17 @@ struct AstNodeTry {
     AstNode *finally;
 };
 
+struct AstNodeWithItem {
+    AstNode *expression;
+    AstNode *target;
+};
+
+struct AstNodeWith {
+    AstNode *items;
+    AstNode *block;
+};
+
+
 struct AstNodeExcept {
     AstNode *expression;
     AstNode *block;
@@ -261,7 +273,6 @@ struct AstNodeTuple: public AstNodeNary {};
 struct AstNode {
     Token token;
     AstNodeType type = AstNodeType::TERMINAL;
-    SymbolTableEntry *scope;
     TypeInfo static_type;
 
     union {
@@ -283,6 +294,8 @@ struct AstNode {
         AstNodeSubscript subscript;
         AstNodeAttributeRef attribute_ref;
         AstNodeTry try_node;
+        AstNodeWithItem with_item;
+        AstNodeWith with_statement;
         AstNodeExcept except;
         AstNodeStarExpression star_expression;
         AstNodeKwarg kwarg;
@@ -299,32 +312,32 @@ struct AstNode {
 };
 
 static inline AstNode *parse_atom(Tokeniser *tokeniser, Arena *ast_arena,
-                                  SymbolTableEntry *scope, CompilerTables *compiler_tables, Arena *symbol_table_arena);;
+                                  SymbolTableEntry *scope, CompilerTables *compiler_tables, Arena *symbol_table_arena);
 static inline AstNode *
 parse_next_expression_into_child(Tokeniser *tokeniser, Arena *ast_arena,
-                                 SymbolTableEntry *scope, CompilerTables *compiler_tables, Arena *symbol_table_arena);;
+                                 SymbolTableEntry *scope, CompilerTables *compiler_tables, Arena *symbol_table_arena);
 static inline AstNode *
 parse_next_star_expression_into_child(Tokeniser *tokeniser, Arena *ast_arena,
                                       SymbolTableEntry *scope,
-                                      CompilerTables *compiler_tables, Arena *symbol_table_arena);;
+                                      CompilerTables *compiler_tables, Arena *symbol_table_arena);
 
 static AstNode *parse_class_def(Tokeniser *tokeniser, Arena *ast_arena,
-                                SymbolTableEntry *scope, CompilerTables *compiler_tables, Arena *symbol_table_arena);;
+                                SymbolTableEntry *scope, CompilerTables *compiler_tables, Arena *symbol_table_arena);
 static AstNode *parse_function_def(Tokeniser *tokeniser, Arena *ast_arena,
-                                   SymbolTableEntry *scope, CompilerTables *compiler_tables, Arena *symbol_table_arena);;
+                                   SymbolTableEntry *scope, CompilerTables *compiler_tables, Arena *symbol_table_arena);
 static inline AstNode *parse_left(Tokeniser *tokeniser, Arena *ast_arena,
-                                  SymbolTableEntry *scope, CompilerTables *compiler_tables, Arena *symbol_table_arena);;
+                                  SymbolTableEntry *scope, CompilerTables *compiler_tables, Arena *symbol_table_arena);
 static AstNode *parse_dotted_name(Tokeniser *tokeniser, Arena *ast_arena,
-                                  SymbolTableEntry *scope, CompilerTables *compiler_tables, Arena *symbol_table_arena);;
+                                  SymbolTableEntry *scope, CompilerTables *compiler_tables, Arena *symbol_table_arena);
 static AstNode *parse_block(Tokeniser *tokeniser, Arena *ast_arena,
-                            SymbolTableEntry *scope, CompilerTables *compiler_tables, Arena *symbol_table_arena);;
+                            SymbolTableEntry *scope, CompilerTables *compiler_tables, Arena *symbol_table_arena);
 static AstNode *parse_statements(Tokeniser *tokeniser, Arena *ast_arena,
-                                 SymbolTableEntry *scope, CompilerTables *compiler_tables, Arena *symbol_table_arena);;
+                                 SymbolTableEntry *scope, CompilerTables *compiler_tables, Arena *symbol_table_arena);
 static AstNode *parse_statement(Tokeniser *tokeniser, Arena *ast_arena,
-                                SymbolTableEntry *scope, CompilerTables *compiler_tables, Arena *symbol_table_arena);;
+                                SymbolTableEntry *scope, CompilerTables *compiler_tables, Arena *symbol_table_arena);
 static AstNode *parse_star_expression(Tokeniser *tokeniser, Arena *ast_arena,
                                       SymbolTableEntry *scope,
-                                      CompilerTables *compiler_tables, Arena *symbol_table_arena);;
+                                      CompilerTables *compiler_tables, Arena *symbol_table_arena);
 
 static AstNode *parse_inc_precedence_minimum_bitwise_or_precedence(
     Tokeniser *tokeniser, Arena *ast_arena, AstNode *left, SymbolTableEntry *scope,
@@ -344,7 +357,7 @@ static AstNode *parse_increasing_precedence(Tokeniser *tokeniser,
                                             Arena *symbol_table_arena,
                                             int min_precedence);
 static AstNode *parse_assignment(Tokeniser *tokeniser, Arena *ast_arena,
-                                 SymbolTableEntry *scope, CompilerTables *compiler_tables, Arena *symbol_table_arena);;
+                                 SymbolTableEntry *scope, CompilerTables *compiler_tables, Arena *symbol_table_arena, AstNode *left);
 static AstNode *parse_assignment_expression(Tokeniser *tokeniser, Arena *ast_arena,
                                             SymbolTableEntry *scope,
                                             CompilerTables *compiler_tables, Arena *symbol_table_arena);;
@@ -374,8 +387,7 @@ static AstNode *parse_else(Tokeniser *tokeniser, Arena *ast_arena, SymbolTableEn
                            CompilerTables *compiler_tables, Arena *symbol_table_arena);;
 static AstNode *parse_star_target(Tokeniser *tokeniser, Arena *ast_arena,
                                   SymbolTableEntry *scope, CompilerTables *compiler_tables, Arena *symbol_table_arena);;
-static inline void assert_comma_and_skip_over(Tokeniser *tokeniser,
-                                              Arena *ast_arena);
+static inline void assert_comma_and_skip_over(Tokeniser *tokeniser);
 static AstNode *parse_function_def_arguments(Tokeniser *tokeniser, Arena *ast_arena,
                                              AstNodeFunctionDef *function,
                                              SymbolTableEntry *scope,

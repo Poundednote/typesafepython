@@ -174,206 +174,73 @@ int Token::precedence() {
 
 std::string debug_token_type_to_string(enum TokenType type) {
     switch (type) {
-    case TokenType::NEWLINE:
-        return "\\n";
-
-    case TokenType::INDENT:
-        return "INDENT";
-
-    case TokenType::DEDENT:
-        return "DEDENT";
-
-    case TokenType::OPEN_PAREN:
-        return "(";
-
-    case TokenType::CLOSED_PAREN:
-        return ")";
-
-    case TokenType::SQUARE_OPEN_PAREN:
-        return "[";
-
-    case TokenType::SQUARE_CLOSED_PAREN:
-        return "]";
-
-    case TokenType::CURLY_OPEN_PAREN:
-        return "{";
-
-    case TokenType::CURLY_CLOSED_PAREN:
-        return "{";
-
-    case TokenType::COMMA:
-        return ",";
-
-    case TokenType::DOT:
-        return ".";
-
-    case TokenType::ASSIGN:
-        return "=";
-
-    case TokenType::COLON:
-        return ":";
-
-    case TokenType::OR:
-        return "or";
-
-    case TokenType::AND:
-        return "and";
-
-    case TokenType::NOT:
-        return "not";
-
-    case TokenType::EQ:
-        return "==";
-
-    case TokenType::NE:
-        return "!=";
-
-    case TokenType::LE:
-        return "<=";
-
-    case TokenType::LT:
-        return "<";
-
-    case TokenType::GE:
-        return ">=";
-
-    case TokenType::GT:
-        return ">";
-
-    case TokenType::IS:
-        return "is";
-
-    case TokenType::IN_TOK:
-        return "in";
-
-    case TokenType::BWOR:
-        return "|";
-
-    case TokenType::BWXOR:
-        return "^";
-
-    case TokenType::BWAND:
-        return "&";
-
-    case TokenType::SHIFTLEFT:
-        return "<<";
-
-    case TokenType::SHIFTRIGHT:
-        return ">>";
-
-    case TokenType::ADDITION:
-        return "+";
-
-    case TokenType::SUBTRACTION:
-        return "-";
-
-    case TokenType::MULTIPLICATION:
-        return "*";
-
-    case TokenType::DIVISION:
-        return "/";
-
-    case TokenType::FLOOR_DIV:
-        return "//";
-
-    case TokenType::REMAINDER:
-        return "%";
-
-    case TokenType::EXPONENTIATION:
-        return "**";
-
-    case TokenType::IDENTIFIER:
-        return "identifier";
-
-    case TokenType::INT_LIT:
-        return "INT";
-
-    case TokenType::FLOAT_LIT:
-        return "FLOAT";
-
-    case TokenType::STRING_LIT:
-        return "STRING";
-
-    case TokenType::NONE:
-        return "None";
-
-    case TokenType::BOOL_TRUE:
-        return "True";
-
-    case TokenType::BOOL_FALSE:
-        return "False";
-
-    case TokenType::RETURN:
-        return "return";
-
-    case TokenType::RAISE:
-        return "raise";
-
-    case TokenType::GLOBAL:
-        return "global";
-
-    case TokenType::NONLOCAL:
-        return "nonlocal";
-
-    case TokenType::FILE:
-        return "FILE";
-
-    case TokenType::ENDFILE:
-        return "EOF";
-
-    case TokenType::YIELD:
-        return "yield";
-
-    case TokenType::IF:
-        return "if";
-
-    case TokenType::ELIF:
-        return "elif";
-
-    case TokenType::ELSE:
-        return "else";
-
-    case TokenType::ARROW:
-        return "ARROW";
-
-    case TokenType::DEF:
-        return "def";
-
-    case TokenType::CLASS:
-        return "class";
-
-    case TokenType::WHILE:
-        return "while";
-
-    case TokenType::FOR:
-        return "for";
-
-    case TokenType::TRY:
-        return "try";
-
-    case TokenType::EXCEPT:
-        return "except";
-
-    case TokenType::AS:
-        return "as";
-
-    case TokenType::FINALLY:
-        return "finally";
-
-    case TokenType::PASS:
-        return "pass";
-
-    case TokenType::BREAK:
-        return "break";
-
-    case TokenType::CONTINUE:
-        return "continue";
-
-    case TokenType::AT:
-        return "@";
-
-    case TokenType::IMPORT:
-        return "import";
+    case TokenType::NEWLINE: return "\\n";
+    case TokenType::INDENT: return "INDENT";
+    case TokenType::DEDENT: return "DEDENT";
+    case TokenType::OPEN_PAREN: return "(";
+    case TokenType::CLOSED_PAREN: return ")";
+    case TokenType::SQUARE_OPEN_PAREN: return "[";
+    case TokenType::SQUARE_CLOSED_PAREN: return "]";
+    case TokenType::CURLY_OPEN_PAREN: return "{";
+    case TokenType::CURLY_CLOSED_PAREN: return "{";
+    case TokenType::COMMA: return ",";
+    case TokenType::DOT: return ".";
+    case TokenType::ASSIGN: return "=";
+    case TokenType::COLON: return ":";
+    case TokenType::OR: return "or";
+    case TokenType::AND: return "and";
+    case TokenType::NOT: return "not";
+    case TokenType::EQ: return "==";
+    case TokenType::NE: return "!=";
+    case TokenType::LE: return "<=";
+    case TokenType::LT: return "<";
+    case TokenType::GE: return ">=";
+    case TokenType::GT: return ">";
+    case TokenType::IS: return "is";
+    case TokenType::IN_TOK: return "in";
+    case TokenType::BWOR: return "|";
+    case TokenType::BWXOR: return "^";
+    case TokenType::BWAND: return "&";
+    case TokenType::SHIFTLEFT: return "<<";
+    case TokenType::SHIFTRIGHT: return ">>";
+    case TokenType::ADDITION: return "+";
+    case TokenType::SUBTRACTION: return "-";
+    case TokenType::MULTIPLICATION: return "*";
+    case TokenType::DIVISION: return "/";
+    case TokenType::FLOOR_DIV: return "//";
+    case TokenType::REMAINDER: return "%";
+    case TokenType::EXPONENTIATION: return "**";
+    case TokenType::IDENTIFIER: return "identifier";
+    case TokenType::INT_LIT: return "INT";
+    case TokenType::FLOAT_LIT: return "FLOAT";
+    case TokenType::STRING_LIT: return "STRING";
+    case TokenType::NONE: return "None";
+    case TokenType::BOOL_TRUE: return "True";
+    case TokenType::BOOL_FALSE: return "False";
+    case TokenType::RETURN: return "return";
+    case TokenType::RAISE: return "raise";
+    case TokenType::GLOBAL: return "global";
+    case TokenType::NONLOCAL: return "nonlocal";
+    case TokenType::FILE: return "FILE";
+    case TokenType::ENDFILE: return "EOF";
+    case TokenType::YIELD: return "yield";
+    case TokenType::IF: return "if";
+    case TokenType::ELIF: return "elif";
+    case TokenType::ELSE: return "else";
+    case TokenType::ARROW: return "ARROW";
+    case TokenType::DEF: return "def";
+    case TokenType::CLASS: return "class";
+    case TokenType::WHILE: return "while";
+    case TokenType::FOR: return "for";
+    case TokenType::TRY: return "try";
+    case TokenType::EXCEPT: return "except";
+    case TokenType::AS: return "as";
+    case TokenType::FINALLY: return "finally";
+    case TokenType::PASS: return "pass";
+    case TokenType::BREAK: return "break";
+    case TokenType::CONTINUE: return "continue";
+    case TokenType::AT: return "@";
+    case TokenType::IMPORT: return "import";
     }
 
     return "UNKNOWN";
@@ -418,6 +285,7 @@ std::string token_to_string(Token token) {
     case TokenType::WHILE: return "while";
     case TokenType::FOR: return "for";
     case TokenType::TRY: return "try";
+    case TokenType::WITH: return "with";
     case TokenType::EXCEPT: return "except";
     case TokenType::FINALLY: return "finally";
     case TokenType::AS: return "as";
@@ -646,6 +514,7 @@ Token Tokeniser::get_next_lookahead() {
         else if (buffer == "while") {token.type = TokenType::WHILE;}
         else if (buffer == "for") {token.type = TokenType::FOR;}
         else if (buffer == "try") {token.type = TokenType::TRY;}
+        else if (buffer == "with") {token.type = TokenType::WITH;}
         else if (buffer == "except") {token.type = TokenType::EXCEPT;}
         else if (buffer == "as") {token.type = TokenType::AS;}
         else if (buffer == "finally") {token.type = TokenType::FINALLY;}
@@ -710,7 +579,7 @@ Token Tokeniser::get_next_lookahead() {
         case '\n': {
             token.type = TokenType::NEWLINE;
             // Eat following newlines
-            while (this->stream->peek(1) == '\n') {
+            while (this->stream->peek(1) == '\n' || this->stream->peek(1) == '\r') {
                 this->stream->next_char();
             }
 
