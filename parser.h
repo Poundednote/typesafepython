@@ -8,84 +8,7 @@
 #endif
 
 #include "tokeniser.h"
-
-#define SYMBOL_TABLE_ARRAY_SIZE (4096)
-
-//NOTE: symbol table ideas
-//
-// tree like hashtable structure where each table points to the parent scope
-//
-// one huge giant hashtable where you can use the scope id as part of the hash -
-// would need to find a way of assigning scope id's probably can just assign an integer to every single node
-
-struct Arena {
-    void *memory = nullptr;
-    size_t capacity = 0;
-    uint32_t offset = 0;
-
-    static inline Arena init(size_t reserve);
-    void *alloc(size_t size);
-    void destroy() {VirtualFree(this->memory, 0, MEM_RELEASE);}
-};
-
-struct SymbolTableEntry;
-
-enum class TypeInfoType {
-    UNKNOWN = 0,
-    INTEGER = 1,
-    FLOAT = 2,
-    STRING = 3,
-    BOOLEAN = 4,
-    COMPLEX = 5,
-    NONE = 6,
-    CUSTOM = 7,
-};
-
-struct TypeInfo {
-    TypeInfoType type;
-    SymbolTableEntry *custom_symbol;
-};
-
-
-enum class SymbolType {
-    VARIABLE = 0,
-    FUNCTION = 1,
-    CLASS = 2,
-};
-
-
-struct SymbolTableKey {
-    std::string identifier;
-    SymbolTableEntry *scope;
-};
-
-struct SymbolTableValue {
-    TypeInfo static_type;
-};
-
-struct SymbolTableEntry {
-    SymbolTableKey key;
-    SymbolTableValue value;
-
-    SymbolTableEntry *next_in_table;
-};
-
-struct SymbolTable {
-    SymbolTableEntry table[SYMBOL_TABLE_ARRAY_SIZE];
-
-    static SymbolTable init();
-    SymbolTableEntry *insert(Arena *arena, std::string string, SymbolTableEntry *scope, SymbolTableValue value);
-    uint32_t hash(std::string &string, SymbolTableEntry *scope);
-    SymbolTableEntry *lookup(std::string &string, SymbolTableEntry *scope);
-};
-
-struct CompilerTables {
-    SymbolTable *variable_table;
-    SymbolTable *function_table;
-    SymbolTable *class_table;
-
-    static CompilerTables init(Arena *arena);
-};
+#include "utils.h"
 
 enum class AstNodeType {
     FILE = 0,
@@ -101,23 +24,24 @@ enum class AstNodeType {
     ASSIGNMENT = 11,
     BLOCK = 12,
     DECLARATION = 13,
-    IF = 14,
-    ELSE = 15,
-    WHILE = 16,
-    FOR_LOOP = 17,
-    FOR_IF = 18,
-    FUNCTION_DEF = 19,
-    CLASS_DEF = 20,
-    FUNCTION_CALL = 21,
-    SUBSCRIPT = 22,
-    ATTRIBUTE_REF = 23,
-    TRY = 24,
-    WITH = 25,
-    WITH_ITEM = 26,
-    EXCEPT = 27,
-    STARRED = 28,
-    KVPAIR = 29,
-    IMPORT = 30,
+    TYPE_ANNOTATION =14,
+    IF = 15,
+    ELSE = 16,
+    WHILE = 17,
+    FOR_LOOP = 18,
+    FOR_IF = 19,
+    FUNCTION_DEF = 20,
+    CLASS_DEF = 21,
+    FUNCTION_CALL = 22,
+    SUBSCRIPT = 23,
+    ATTRIBUTE_REF = 24,
+    TRY = 25,
+    WITH = 26,
+    WITH_ITEM = 27,
+    EXCEPT = 28,
+    STARRED = 29,
+    KVPAIR = 30,
+    IMPORT = 31,
 };
 
 struct AstNode;
@@ -136,18 +60,17 @@ struct AstNodeBinaryExpr {
 };
 
 struct AstNodeAssignment {
-    union {
-        struct {
-            AstNode *name;
-            AstNode *expression;
-        };
-
-        AstNode *children[2];
-    };
+    AstNode *name;
+    AstNode *expression;
 };
 
 struct AstNodeDeclaration: public AstNodeAssignment {
     AstNode *annotation;
+};
+
+struct AstNodeTypeAnnot {
+    AstNode *name;
+    AstNode *parameters;
 };
 
 struct AstNodeIf {
@@ -283,6 +206,7 @@ struct AstNode {
         AstNodeUnary unary;
         AstNodeDeclaration declaration;
         AstNodeAssignment assignment;
+        AstNodeTypeAnnot type_annotation;
         AstNodeIf if_stmt;
         AstNodeElse else_stmt;
         AstNodeWhile while_loop;

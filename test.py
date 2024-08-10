@@ -1,10 +1,15 @@
+from typing import List
+
 a: str = "new_drank"
 b: str = "string"
 c: str = ""
+d: List[int | str] = [1, 2, 3, 4, "hello"]
 
 class Foo:
-    bar: int = 4
     baz: str = "hello"
+
+    def bar(self) -> int:
+        return 1
 
 def first() -> str:
     while 1:
@@ -18,8 +23,9 @@ def first() -> str:
 
 def second() -> int:
     foo: Foo
-    return foo.baz
+    return 1
 
+def cawk(a: int) -> int:
+    return a + 1;
 
-with fopen() as file:
-    1 + 1
+cawk(d[1])

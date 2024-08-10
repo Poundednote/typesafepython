@@ -1,13 +1,18 @@
 #include <stdio.h>
 #include "typing.h"
 
+
+// TODO: GENERICS
+// TODO: Figure out how to store uninon types
+// wether or not to cap them to a maximun number of types or to allocate dynamically
+
 static void fail_typing_with_debug(AstNode *node) {
     fprintf(stderr, "Invalid Types\n");
     debug_print_parse_tree(node, 0);
     exit(1);
 }
 
-static inline void scope_stack_push(Arena *scope_stack, SymbolTableEntry *value) {
+static inline void scope_stack_push(SubArena *scope_stack, SymbolTableEntry *value) {
     SymbolTableEntry **new_scope =
         (SymbolTableEntry **)scope_stack->alloc(sizeof(SymbolTableEntry *));
     *new_scope = value;
@@ -19,7 +24,7 @@ static inline void scope_stack_pop(Arena *scope_stack) {
 
 static inline SymbolTableEntry *scope_stack_peek(Arena *scope_stack) {
     return *((SymbolTableEntry **)(((char *)scope_stack->memory) +
-                                   scope_stack->offset -
+                                    scope_stack->offset -
                                    sizeof(SymbolTableEntry *)));
 }
 
@@ -43,7 +48,7 @@ static bool recreate_binary_expresison_from_root(AstNode *root) {
     recreate_statement_from_root(AstNode *root)
 }
 */
-static bool find_symbol_definition_and_type(Arena *scope_stack, AstNode *node, SymbolTable *symbol_table) {
+static bool find_symbol_definition_and_type(SubArena *scope_stack, AstNode *node, SymbolTable *symbol_table) {
     SymbolTableEntry *result = nullptr;
 
     for (int i = (scope_stack->offset / sizeof(SymbolTableEntry *)) - 1;
@@ -70,8 +75,9 @@ static bool find_symbol_definition_and_type(Arena *scope_stack, AstNode *node, S
     }
 }
 
-static int type_parse_tree(AstNode *node, Arena *scope_stack,
-                           CompilerTables *compiler_tables) {
+static int type_parse_tree(AstNode *node, Arena *parse_arena, SubArena *scope_stack,
+                           CompilerTables *compiler_tables,
+                           SymbolTable *table_to_look) {
     if (!node) {
         return 0;
     }
@@ -99,46 +105,28 @@ static int type_parse_tree(AstNode *node, Arena *scope_stack,
         }
 
         else if (node->token.type == TokenType::IDENTIFIER) {
-            if (node->token.value == "int") {
-                node->static_type.type = TypeInfoType::INTEGER;
-            }
-
-            else if (node->token.value == "float") {
-                node->static_type.type = TypeInfoType::FLOAT;
-            }
-
-            else if (node->token.value == "str") {
-                node->static_type.type = TypeInfoType::STRING;
-            }
-
-            else if (node->token.value == "bool") {
-                node->static_type.type = TypeInfoType::BOOLEAN;
-            }
-
-            else if (node->token.value == "complex") {
-                node->static_type.type = TypeInfoType::COMPLEX;
-            }
-
-            else if (node->token.value == "NoneType") {
-                node->static_type.type = TypeInfoType::NONE;
-            }
-
-            else {
-                // search for a typename first of all
-                if (find_symbol_definition_and_type(
-                        scope_stack, node, compiler_tables->class_table)) {
-                    break;
-                }
-
-                find_symbol_definition_and_type(
-                    scope_stack, node, compiler_tables->variable_table);
-            }
+            find_symbol_definition_and_type(scope_stack, node, table_to_look);
         }
+
+    } break;
+
+    case AstNodeType::TYPE_ANNOTATION: {
+        type_parse_tree(node->type_annotation.name, parse_arena, scope_stack, compiler_tables,
+                        compiler_tables->class_table);
+
+        AstNode *parameter = node->type_annotation.parameters;
+        while(parameter) {
+            type_parse_tree(node->type_annotation.parameters, parse_arena, scope_stack,
+                            compiler_tables, compiler_tables->class_table);
+            parameter = parameter->adjacent_child;
+        }
+
+        node->static_type = node->type_annotation.name->static_type;
     } break;
 
     case AstNodeType::UNARY: {
         AstNode *child = node->unary.child;
-        type_parse_tree(child, scope_stack, compiler_tables);
+        type_parse_tree(child, parse_arena, scope_stack, compiler_tables, table_to_look);
         node->static_type = child->static_type;
 
         if (node->token.type == TokenType::RETURN) {
@@ -150,8 +138,8 @@ static int type_parse_tree(AstNode *node, Arena *scope_stack,
     case AstNodeType::BINARYEXPR: {
         AstNode *left = node->binary.left;
         AstNode *right = node->binary.right;
-        type_parse_tree(left, scope_stack, compiler_tables);
-        type_parse_tree(right, scope_stack, compiler_tables);
+        type_parse_tree(left, parse_arena, scope_stack, compiler_tables, table_to_look);
+        type_parse_tree(right, parse_arena, scope_stack, compiler_tables, table_to_look);
 
         node->static_type.type = TypeInfoType::BOOLEAN;
 
@@ -242,7 +230,7 @@ static int type_parse_tree(AstNode *node, Arena *scope_stack,
     case AstNodeType::NARY: {
         AstNode *child = node->nary.children;
         while (child) {
-            type_parse_tree(child, scope_stack, compiler_tables);
+            type_parse_tree(child, parse_arena, scope_stack, compiler_tables, table_to_look);
             child = child->adjacent_child;
         }
 
@@ -252,19 +240,20 @@ static int type_parse_tree(AstNode *node, Arena *scope_stack,
     case AstNodeType::FILE: {
         AstNode *child = node->file.children;
         while (child) {
-            type_parse_tree(child, scope_stack, compiler_tables);
+            type_parse_tree(child, parse_arena, scope_stack, compiler_tables, table_to_look);
             child = child->adjacent_child;
         }
     } break;
 
     case AstNodeType::FUNCTION_DEF: {
-        type_parse_tree(node->function_def.return_type, scope_stack, compiler_tables);
+        type_parse_tree(node->function_def.return_type, parse_arena, scope_stack,
+                        compiler_tables, compiler_tables->class_table);
 
         SymbolTableEntry *new_scope = compiler_tables->function_table->lookup(
             node->function_def.name->token.value, scope_stack_peek(scope_stack));
         scope_stack_push(scope_stack, new_scope);
 
-        type_parse_tree(node->function_def.block, scope_stack, compiler_tables);
+        type_parse_tree(node->function_def.block, parse_arena, scope_stack, compiler_tables, table_to_look);
         node->static_type = node->function_def.return_type->static_type;
 
         if (node->function_def.block->static_type.type != node->static_type.type) {
@@ -289,13 +278,65 @@ static int type_parse_tree(AstNode *node, Arena *scope_stack,
         break;
     case AstNodeType::DICTCOMP:
         break;
-    case AstNodeType::LIST:
-        break;
+
+    case AstNodeType::LIST: {
+        node->static_type.type = TypeInfoType::LIST;
+        uint32_t previous_type_mask = 0x00000000;
+        uint32_t union_type_mask = 0x00000000;
+        AstNode *child = node->nary.children;
+
+        TypeInfo list_item_type = {};
+        TypeInfo **types_in_list = (TypeInfo **)parse_arena->alloc(sizeof(TypeInfo *[1000]));
+        uint32_t custom_index = (uint32_t)TypeInfoType::CUSTOM;
+        while (child) {
+            type_parse_tree(child, parse_arena, scope_stack, compiler_tables,
+                            table_to_look);
+
+            if (child->static_type.type == TypeInfoType::CUSTOM) {
+                types_in_list[custom_index++] = &child->static_type;
+            }
+
+            else if (child->static_type.type == TypeInfoType::UNION) {
+                types_in_list[custom_index++] = &child->static_type;
+            }
+
+            else {
+                types_in_list[(int)child->static_type.type] = &child->static_type;
+                child = child->adjacent_child;
+            }
+        }
+
+        for (int i = 0; i < custom_index)
+
+        // free the space
+        parse_arena->offset -= sizeof(types_in_list);
+
+        child = node->nary.children;
+
+        if (previous_type_mask) {
+            list_item_tye.type = UNION;
+            while(child) {
+                uint32_t type_bit (0x00000000 | (1 << (int)child->static_type.type))
+                uint32_t type = union_type_mask & type_bit;
+                union_type_mask = union_type_mask ^ type_bit;
+                if (type_bit) {
+                    chid->static_type;
+                }
+            }
+        }
+
+        // fix children into correct union types according to the mask
+    } break;
+
     case AstNodeType::LISTCOMP:
         break;
     case AstNodeType::ASSIGNMENT: {
-        type_parse_tree(node->assignment.name, scope_stack, compiler_tables);
-        type_parse_tree(node->assignment.expression, scope_stack, compiler_tables);
+        type_parse_tree(node->assignment.name, parse_arena, scope_stack, compiler_tables,
+                        compiler_tables->variable_table);
+
+        type_parse_tree(node->assignment.expression, parse_arena, scope_stack,
+                        compiler_tables, table_to_look);
+
         if (node->assignment.expression->static_type.type !=
                 node->assignment.name->static_type.type ||
             node->assignment.expression->static_type.custom_symbol !=
@@ -314,7 +355,7 @@ static int type_parse_tree(AstNode *node, Arena *scope_stack,
         node->static_type.type = TypeInfoType::UNKNOWN;
         int return_flag = 0;
         while (child) {
-            return_flag = type_parse_tree(child, scope_stack, compiler_tables);
+            return_flag = type_parse_tree(child, parse_arena, scope_stack, compiler_tables, table_to_look);
             if (return_flag == 1) {
                 if (node->static_type.type == TypeInfoType::UNKNOWN) {
                     node->static_type = child->static_type;
@@ -336,9 +377,11 @@ static int type_parse_tree(AstNode *node, Arena *scope_stack,
     } break;
 
     case AstNodeType::DECLARATION: {
+        type_parse_tree(node->declaration.annotation,
+                        scope_stack,
+                        compiler_tables, compiler_tables->class_table);
 
-        type_parse_tree(node->declaration.annotation, scope_stack, compiler_tables);
-        type_parse_tree(node->declaration.expression, scope_stack, compiler_tables);
+        type_parse_tree(node->declaration.expression, parse_arena, scope_stack, compiler_tables, table_to_look);
 
         if (node->declaration.expression) {
             if (node->declaration.annotation->static_type.type !=
@@ -347,9 +390,9 @@ static int type_parse_tree(AstNode *node, Arena *scope_stack,
                 node->declaration.annotation->static_type.custom_symbol !=
                     node->declaration.expression->static_type.custom_symbol) {
 
-                fprintf(
-                    stderr,
-                    "Declaration expression must match annotated return type");
+                fprintf(stderr, "TypeError: line: %d, col: %d, Declaration "
+                                "expression must match annotated return type",
+                        node->token.line, node->declaration.expression->token.column);
                 exit(1);
             }
         }
@@ -364,11 +407,11 @@ static int type_parse_tree(AstNode *node, Arena *scope_stack,
         // NOTE: conditions can be any type
         // all objects types can be considered either truthy or falsy if their length evaluates to zero
         // or their __bool__ method returns false
-        type_parse_tree(node->if_stmt.condition, scope_stack, compiler_tables);
-        int return_flag = type_parse_tree(node->if_stmt.block, scope_stack, compiler_tables);
+        type_parse_tree(node->if_stmt.condition, parse_arena, scope_stack, compiler_tables, table_to_look);
+        int return_flag = type_parse_tree(node->if_stmt.block, parse_arena, scope_stack, compiler_tables, table_to_look);
 
         node->static_type = node->if_stmt.block->static_type;
-        type_parse_tree(node->if_stmt.or_else, scope_stack, compiler_tables);
+        type_parse_tree(node->if_stmt.or_else, parse_arena, scope_stack, compiler_tables, table_to_look);
         if (node->if_stmt.or_else)  {
             if (node->static_type.type != node->if_stmt.or_else->static_type.type ||
                 node->static_type.custom_symbol != node->if_stmt.or_else->static_type.custom_symbol) {
@@ -394,7 +437,7 @@ static int type_parse_tree(AstNode *node, Arena *scope_stack,
     } break;
 
     case AstNodeType::ELSE: {
-        int return_flag = type_parse_tree(node->else_stmt.block, scope_stack, compiler_tables);
+        int return_flag = type_parse_tree(node->else_stmt.block, parse_arena, scope_stack, compiler_tables, table_to_look);
         node->static_type = node->else_stmt.block->static_type;
 
         return return_flag;
@@ -402,10 +445,10 @@ static int type_parse_tree(AstNode *node, Arena *scope_stack,
 
     case AstNodeType::WHILE: {
 
-        type_parse_tree(node->while_loop.condition, scope_stack, compiler_tables);
+        type_parse_tree(node->while_loop.condition, parse_arena, scope_stack, compiler_tables, table_to_look);
 
-        int return_flag = type_parse_tree(node->while_loop.block, scope_stack, compiler_tables);
-        type_parse_tree(node->while_loop.or_else, scope_stack, compiler_tables);
+        int return_flag = type_parse_tree(node->while_loop.block, parse_arena, scope_stack, compiler_tables, table_to_look);
+        type_parse_tree(node->while_loop.or_else, parse_arena, scope_stack, compiler_tables, table_to_look);
 
         if (node->while_loop.or_else) {
             if (node->static_type.type != node->while_loop.or_else->static_type.type ||
@@ -436,24 +479,36 @@ static int type_parse_tree(AstNode *node, Arena *scope_stack,
     case AstNodeType::CLASS_DEF: {
         SymbolTableEntry *new_scope = compiler_tables->class_table->lookup(
             node->class_def.name->token.value, scope_stack_peek(scope_stack));
+
         scope_stack_push(scope_stack, new_scope);
 
-        type_parse_tree(node->class_def.arguments, scope_stack, compiler_tables);
-        type_parse_tree(node->class_def.block, scope_stack, compiler_tables);
+        type_parse_tree(node->class_def.arguments, parse_arena, scope_stack, compiler_tables, table_to_look);
+        type_parse_tree(node->class_def.block, parse_arena, scope_stack, compiler_tables, table_to_look);
 
         scope_stack_pop(scope_stack);
 
     } break;
-    case AstNodeType::FUNCTION_CALL:
-        break;
+
+    case AstNodeType::FUNCTION_CALL: {
+        // Find function in table
+        type_parse_tree(node->function_call.expression, parse_arena, scope_stack,
+                        compiler_tables, compiler_tables->function_table);
+
+        type_parse_tree(node->function_call.args, parse_arena, scope_stack, compiler_tables, table_to_look);
+
+        node->static_type = node->function_call.expression->static_type;
+
+    } break;
     case AstNodeType::SUBSCRIPT:
         break;
     case AstNodeType::ATTRIBUTE_REF: {
-        type_parse_tree(node->attribute_ref.name, scope_stack, compiler_tables);
+        type_parse_tree(node->attribute_ref.name, parse_arena, scope_stack, compiler_tables,
+                        compiler_tables->variable_table);
 
-        //find symbol in class
-        SymbolTableEntry *result = compiler_tables->variable_table->lookup(node->attribute_ref.attribute->token.value,
-                                             node->attribute_ref.name->static_type.custom_symbol);
+        // find symbol in class
+        SymbolTableEntry *result = table_to_look->lookup(
+            node->attribute_ref.attribute->token.value,
+            node->attribute_ref.name->static_type.custom_symbol);
 
         if (!result) {
             fprintf(
@@ -477,7 +532,10 @@ static int type_parse_tree(AstNode *node, Arena *scope_stack,
         break;
     case AstNodeType::IMPORT:
         break;
-
+    case AstNodeType::WITH:
+        break;
+    case AstNodeType::WITH_ITEM:
+        break;
     }
      return 0;
 }

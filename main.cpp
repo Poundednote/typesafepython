@@ -119,34 +119,64 @@ int main(int argc, char *argv[]) {
     SymbolTableValue main_symbol_value = {};
     main_symbol_value.static_type.type = TypeInfoType::INTEGER;
 
-    std::string main_identifier = "main";
     SymbolTableEntry *main_scope = tables.function_table->insert(
-        &symbol_table_arena, main_identifier, 0, main_symbol_value);
+        &symbol_table_arena, "main", 0, main_symbol_value);
 
+    // add builtin types to table for refereance in other generic types
+    SymbolTableValue builtin_value = {};
+    builtin_value.static_type.type = TypeInfoType::INTEGER;
+    tables.class_table->insert(&symbol_table_arena,
+                               "int", main_scope, builtin_value);
+    builtin_value.static_type.type = TypeInfoType::FLOAT;
+    tables.class_table->insert(&symbol_table_arena,
+                               "float", main_scope, builtin_value);
+    builtin_value.static_type.type = TypeInfoType::STRING;
+    tables.class_table->insert(&symbol_table_arena,
+                               "str", main_scope, builtin_value);
+    builtin_value.static_type.type = TypeInfoType::BOOLEAN;
+    tables.class_table->insert(&symbol_table_arena,
+                               "bool", main_scope, builtin_value);
+    builtin_value.static_type.type = TypeInfoType::COMPLEX;
+    tables.class_table->insert(&symbol_table_arena,
+                               "complex", main_scope, builtin_value);
+    builtin_value.static_type.type = TypeInfoType::LIST;
+    tables.class_table->insert(&symbol_table_arena,
+                               "List", main_scope, builtin_value);
+    builtin_value.static_type.type = TypeInfoType::DICT;
+    tables.class_table->insert(&symbol_table_arena,
+                               "Dict", main_scope, builtin_value);
+    builtin_value.static_type.type = TypeInfoType::NONE;
+    tables.class_table->insert(&symbol_table_arena,
+                               "None", main_scope, builtin_value);
+
+    // parse
     AstNode *root = parse_statements(&tokeniser, &parse_arena, main_scope, &tables, &symbol_table_arena);
 
-    Arena scope_stack_sub_arena = {};
-    scope_stack_sub_arena.memory = parse_arena.alloc(sizeof(void *)*1000);
-    scope_stack_sub_arena.capacity = PAGE_SIZE;
-
+    // initilise a stack for scopes when typing
+    SubArena scope_stack_sub_arena = SubArena::init(&parse_arena, sizeof(void *)*1000);
+    // push main
     scope_stack_push(&scope_stack_sub_arena, main_scope);
-    type_parse_tree(root, &scope_stack_sub_arena, &tables);
-    //Freeing the scope_stack sub arena
-    parse_arena.offset -= scope_stack_sub_arena.capacity;
 
+    //type
+    type_parse_tree(root, &parse_arena, &scope_stack_sub_arena, &tables,
+                    tables.variable_table);
+
+    // Freeing the scope_stack sub arena
+    scope_stack_sub_arena.destory();
 
     printf("\n");
-    debug_print_parse_tree(root, 0);
+    //debug_print_parse_tree(root, 0);
 
     FILE *output_f;
-    fopen_s(&output_f, "out.c", "w");
-    generate_code(output_f, root, 0, true);
-    fprintf_s(output_f, "return 0;}");
-    fclose(output_f);
+    //fopen_s(&output_f, "out.c", "w");
+    //generate_code(output_f, root, 0, true);
+    //fprintf_s(output_f, "return 0;}");
+    //fclose(output_f);
 
-    printf("Finished Parsing %d lines", input_stream.line);
+    printf("Finished Parsing Typechecking %d lines", input_stream.line);
 
+    // free
     parse_arena.destroy();
-    input_stream.destroy(); // free
+    input_stream.destroy();
     return 0;
 }

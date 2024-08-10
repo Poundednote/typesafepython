@@ -4,10 +4,6 @@
 #include <stdint.h>
 #include <string>
 
-#if DEBUG
-#define assert(condition) if(!(condition)) {*(volatile int *)(0) = 0;}
-#endif
-
 // Listed in reverse order of precedence for token_precendce()
 // precedence may be used even in non math operations such as typed assignments
 // operators clumped together have the same precendece

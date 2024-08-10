@@ -2,6 +2,7 @@
 #include <stdio.h>
 
 #include "tokeniser.h"
+#include "utils.h"
 
 bool Token::is_binary_op() {
     switch (this->type) {

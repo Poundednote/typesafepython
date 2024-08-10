@@ -213,7 +213,7 @@ static Test floats_and_numbers_types_test() {
     AstNode *child = root->nary.children;
 
     Arena scope_stack = Arena();
-    type_parse_tree(root, &scope_stack, &tables);
+    type_parse_tree(root, &scope_stack, &tables, tables.variable_table);
     scope_stack.destroy();
 
     ASSERT(child->static_type.type == TypeInfoType::INTEGER, debug_static_type_to_string(child->static_type).c_str());
