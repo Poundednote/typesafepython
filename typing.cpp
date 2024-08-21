@@ -42,6 +42,16 @@ static bool is_num_type(TypeInfo type_info) {
     }
 }
 
+static inline bool static_types_are_equal(TypeInfo a, TypeInfo b) {
+    if (a.type == b.type && a.custom_symbol == b.custom_symbol) {
+        return true;
+    }
+
+    else {
+        return false;
+    }
+}
+
 //TODO implement for debugging
 /*
 static bool recreate_binary_expresison_from_root(AstNode *root) {
@@ -144,8 +154,7 @@ static int type_parse_tree(AstNode *node, Arena *parse_arena, SubArena *scope_st
         node->static_type.type = TypeInfoType::BOOLEAN;
 
         if (node->token.is_comparrison_op()) {
-            if (left->static_type.type == right->static_type.type &&
-                left->static_type.custom_symbol == right->static_type.custom_symbol) {
+            if (stati) {
 
                 return 0;
             }
@@ -278,40 +287,31 @@ static int type_parse_tree(AstNode *node, Arena *parse_arena, SubArena *scope_st
         break;
     case AstNodeType::DICTCOMP:
         break;
-
     case AstNodeType::LIST: {
-        node->static_type.type = TypeInfoType::LIST;
-        uint32_t previous_type_mask = 0x00000000;
-        uint32_t union_type_mask = 0x00000000;
-        AstNode *child = node->nary.children;
 
-        TypeInfo list_item_type = {};
-        TypeInfo **types_in_list = (TypeInfo **)parse_arena->alloc(sizeof(TypeInfo *[1000]));
-        uint32_t custom_index = (uint32_t)TypeInfoType::CUSTOM;
+        AstNode *child = node->nary.children;
+        TypeInfo *curr_union = &node->static_type;
+        TypeInfo *prev_info = nullptr;
         while (child) {
             type_parse_tree(child, parse_arena, scope_stack, compiler_tables,
                             table_to_look);
 
-            if (child->static_type.type == TypeInfoType::CUSTOM) {
-                types_in_list[custom_index++] = &child->static_type;
+
+            if (prev_info) {
+                if (!static_types_are_equal(*prev_info, child->static_type)) {
+                    curr_union->type = TypeInfoType::UNION;
+                    curr_union->union_type.left = prev_info;
+                    curr_union->union_type.right = &child->static_type;
+                    curr_union = curr_union->union_type.right;
+                }
             }
 
-            else if (child->static_type.type == TypeInfoType::UNION) {
-                types_in_list[custom_index++] = &child->static_type;
-            }
+            prev_info = &child->static_type;
+            child = node->adjacent_child;
 
-            else {
-                types_in_list[(int)child->static_type.type] = &child->static_type;
-                child = child->adjacent_child;
-            }
+
         }
 
-        for (int i = 0; i < custom_index)
-
-        // free the space
-        parse_arena->offset -= sizeof(types_in_list);
-
-        child = node->nary.children;
 
         if (previous_type_mask) {
             list_item_tye.type = UNION;
@@ -337,10 +337,8 @@ static int type_parse_tree(AstNode *node, Arena *parse_arena, SubArena *scope_st
         type_parse_tree(node->assignment.expression, parse_arena, scope_stack,
                         compiler_tables, table_to_look);
 
-        if (node->assignment.expression->static_type.type !=
-                node->assignment.name->static_type.type ||
-            node->assignment.expression->static_type.custom_symbol !=
-                node->assignment.name->static_type.custom_symbol) {
+        if (static_types_are_equal(node->assignment.expression->static_type,
+                                   node->assignment.name->static_type)) {
 
             fprintf(stderr, "Assignment value miscmatched types\n");
         }
@@ -377,22 +375,21 @@ static int type_parse_tree(AstNode *node, Arena *parse_arena, SubArena *scope_st
     } break;
 
     case AstNodeType::DECLARATION: {
-        type_parse_tree(node->declaration.annotation,
-                        scope_stack,
+        type_parse_tree(node->declaration.annotation, parse_arena, scope_stack,
                         compiler_tables, compiler_tables->class_table);
 
         type_parse_tree(node->declaration.expression, parse_arena, scope_stack, compiler_tables, table_to_look);
 
         if (node->declaration.expression) {
-            if (node->declaration.annotation->static_type.type !=
-                    node->declaration.expression->static_type.type ||
+            if (!static_types_are_equal(
+                    node->declaration.expression->static_type,
+                    node->declaration.annotation->static_type)) {
 
-                node->declaration.annotation->static_type.custom_symbol !=
-                    node->declaration.expression->static_type.custom_symbol) {
-
-                fprintf(stderr, "TypeError: line: %d, col: %d, Declaration "
-                                "expression must match annotated return type",
-                        node->token.line, node->declaration.expression->token.column);
+                fprintf(stderr,
+                        "TypeError: line: %d, col: %d, Declaration "
+                        "expression must match annotated return type",
+                        node->token.line,
+                        node->declaration.expression->token.column);
                 exit(1);
             }
         }
@@ -413,9 +410,7 @@ static int type_parse_tree(AstNode *node, Arena *parse_arena, SubArena *scope_st
         node->static_type = node->if_stmt.block->static_type;
         type_parse_tree(node->if_stmt.or_else, parse_arena, scope_stack, compiler_tables, table_to_look);
         if (node->if_stmt.or_else)  {
-            if (node->static_type.type != node->if_stmt.or_else->static_type.type ||
-                node->static_type.custom_symbol != node->if_stmt.or_else->static_type.custom_symbol) {
-
+            if (!static_types_are_equal(node->static_type, node->if_stmt.or_else->static_type)) {
                 fprintf(stderr,
                         "TypeError: line: %d col: %d in if statement branch"
                         ", all branches must have the same return type\n"
@@ -451,19 +446,20 @@ static int type_parse_tree(AstNode *node, Arena *parse_arena, SubArena *scope_st
         type_parse_tree(node->while_loop.or_else, parse_arena, scope_stack, compiler_tables, table_to_look);
 
         if (node->while_loop.or_else) {
-            if (node->static_type.type != node->while_loop.or_else->static_type.type ||
-                node->static_type.custom_symbol != node->while_loop.or_else->static_type.custom_symbol) {
+            if (!static_types_are_equal(node->static_type,
+                                       node->while_loop.or_else->static_type)) {
 
-                fprintf(
-                    stderr,
-                    "TypeError: line: %d col: %d in if statement branch"
-                    ", all branches must have the same return type\n"
-                    "'%s' on line: %d col %d has a mismatched type\n",
-                    node->while_loop.block->token.line,
-                    node->while_loop.block->token.column,
-                    debug_token_type_to_string(node->while_loop.or_else->token.type).c_str(),
-                    node->while_loop.or_else->token.line,
-                    node->while_loop.or_else->token.column);
+                fprintf(stderr,
+                        "TypeError: line: %d col: %d in if statement branch"
+                        ", all branches must have the same return type\n"
+                        "'%s' on line: %d col %d has a mismatched type\n",
+                        node->while_loop.block->token.line,
+                        node->while_loop.block->token.column,
+                        debug_token_type_to_string(
+                            node->while_loop.or_else->token.type)
+                            .c_str(),
+                        node->while_loop.or_else->token.line,
+                        node->while_loop.or_else->token.column);
 
                 exit(1);
             }

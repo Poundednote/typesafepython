@@ -61,7 +61,8 @@ struct TypeInfoList {
 };
 
 struct TypeInfoUnion {
-    TypeInfo *other_type;
+    TypeInfo *left;
+    TypeInfo *right;
 };
 
 struct TypeInfo {

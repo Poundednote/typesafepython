@@ -2,6 +2,11 @@
 #include "parser.h"
 #include "tokeniser.h"
 
+// TODO DEL STATMENTS
+// TODO MATCH STATMENTS
+// TODO YIELD STATMENTS
+// TODO ASSERT STATMENTS
+
 static std::string debug_static_type_to_string(TypeInfo type_info) {
     switch (type_info.type) {
         case TypeInfoType::INTEGER: return "int";
