@@ -2,13 +2,10 @@
 #define PARSER_H_
 
 #include <stdint.h>
-
-#ifdef _WIN32
-#include <windows.h>
-#endif
-
 #include "tokeniser.h"
 #include "utils.h"
+
+#define SYMBOL_TABLE_ARRAY_SIZE (4096)
 
 enum class AstNodeType {
     FILE = 0,
@@ -42,6 +39,7 @@ enum class AstNodeType {
     STARRED = 29,
     KVPAIR = 30,
     IMPORT = 31,
+    UNION = 32,
 };
 
 struct AstNode;
@@ -69,9 +67,11 @@ struct AstNodeDeclaration: public AstNodeAssignment {
 };
 
 struct AstNodeTypeAnnot {
-    AstNode *name;
+    AstNode *type;
     AstNode *parameters;
 };
+
+struct AstNodeUnion: public AstNodeBinaryExpr {};
 
 struct AstNodeIf {
     AstNode *condition;
@@ -226,6 +226,7 @@ struct AstNode {
         AstNodeKvPair kvpair;
         AstNodeImport import;
         AstNodeTuple tuple;
+        AstNodeUnion union_type;
     };
 
     AstNode *adjacent_child = nullptr;
@@ -233,6 +234,41 @@ struct AstNode {
     static AstNode create_terminal(Token token);
     static AstNode create_unary(Token token, AstNode *child);
     static AstNode create_binary(Token token, AstNode *left, AstNode *right);
+};
+
+struct SymbolTableKey {
+    std::string identifier;
+    SymbolTableEntry *scope;
+};
+
+struct SymbolTableValue {
+    TypeInfo static_type;
+    AstNode *node;
+};
+
+struct SymbolTableEntry {
+    SymbolTableKey key;
+    SymbolTableValue value;
+
+    SymbolTableEntry *next_in_table;
+};
+
+struct SymbolTable {
+    SymbolTableEntry table[SYMBOL_TABLE_ARRAY_SIZE];
+
+    SymbolTableEntry *insert(Arena *arena, std::string string, SymbolTableEntry *scope, SymbolTableValue value);
+    uint32_t hash(std::string &string, SymbolTableEntry *scope);
+    SymbolTableEntry *lookup(std::string &string, SymbolTableEntry *scope);
+};
+
+//TODO bounds checking for builtin_type_table
+struct CompilerTables {
+    SymbolTable *variable_table;
+    SymbolTable *function_table;
+    SymbolTable *class_table;
+    TypeInfo *builtin_types;
+
+    static CompilerTables init(Arena *arena);
 };
 
 static inline AstNode *parse_atom(Tokeniser *tokeniser, Arena *ast_arena,

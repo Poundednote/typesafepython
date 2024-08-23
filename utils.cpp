@@ -47,6 +47,7 @@ void *Arena::alloc(size_t size) {
 
 inline SubArena SubArena::init(Arena *backing_arena, size_t size) {
     SubArena sub_arena = {};
+    sub_arena.backing_arena = backing_arena;
     sub_arena.memory = backing_arena->alloc(size);
     sub_arena.capacity = size;
     sub_arena.offset = 0;
@@ -65,8 +66,8 @@ inline void *SubArena::alloc(size_t size) {
     return (void *)new_base;
 }
 
-inline void SubArena::destroy(SubArena *sub_arena, Arena *backing_arena) {
-    backing_arena->offset -= sub_arena->capacity;
+inline void SubArena::destroy() {
+    this->backing_arena->offset -= this->capacity;
 }
 
 inline uint32_t SymbolTable::hash(std::string &string, SymbolTableEntry *scope) {

@@ -2,6 +2,7 @@
 #include <stdint.h>
 
 #include "parser.cpp"
+#include "utils.cpp"
 #include "tokeniser.cpp"
 #include "typing.cpp"
 
@@ -162,12 +163,12 @@ int main(int argc, char *argv[]) {
                     tables.variable_table);
 
     // Freeing the scope_stack sub arena
-    scope_stack_sub_arena.destory();
+    scope_stack_sub_arena.destroy();
 
     printf("\n");
     //debug_print_parse_tree(root, 0);
 
-    FILE *output_f;
+    //FILE *output_f;
     //fopen_s(&output_f, "out.c", "w");
     //generate_code(output_f, root, 0, true);
     //fprintf_s(output_f, "return 0;}");
@@ -178,5 +179,6 @@ int main(int argc, char *argv[]) {
     // free
     parse_arena.destroy();
     input_stream.destroy();
+
     return 0;
 }

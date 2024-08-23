@@ -318,6 +318,8 @@ std::string token_to_string(Token token) {
     case TokenType::FILE: return "";
     case TokenType::ENDFILE: return "";
     }
+
+    return "";
 }
 
 InputStream InputStream::create_from_file(const char *filename) {
@@ -523,6 +525,7 @@ Token Tokeniser::get_next_lookahead() {
         else if (buffer == "break") {token.type = TokenType::BREAK;}
         else if (buffer == "continue") {token.type = TokenType::CONTINUE;}
         else if (buffer == "import") {token.type = TokenType::IMPORT;}
+        else if (buffer == "del") {token.type = TokenType::DEL;}
 
         else {
             token.type = TokenType::IDENTIFIER;

@@ -19,7 +19,6 @@
 #define assert(condition) if(!(condition)) {*(volatile int *)(0) = 0;}
 #endif
 
-#define SYMBOL_TABLE_ARRAY_SIZE (4096)
 
 struct Arena {
     void *memory = nullptr;
@@ -32,9 +31,11 @@ struct Arena {
 };
 
 struct SubArena: public Arena {
+    Arena *backing_arena;
+
     static inline SubArena init(Arena *backing_arena, size_t capacity);
-    static inline SubArena alloc(Arena *backing_arena, size_t capacity);
-    void destory();
+    inline void *alloc(size_t capacity);
+    inline void destroy();
 };
 
 enum class TypeInfoType {
@@ -74,45 +75,6 @@ struct TypeInfo {
         TypeInfoUnion union_type;
     };
 
-};
-
-struct SymbolTableKey {
-    std::string identifier;
-    SymbolTableEntry *scope;
-};
-
-struct SymbolTableValue {
-    TypeInfo static_type;
-};
-
-struct SymbolTableEntry {
-    SymbolTableKey key;
-    SymbolTableValue value;
-
-    SymbolTableEntry *next_in_table;
-};
-
-struct SymbolTable {
-    SymbolTableEntry table[SYMBOL_TABLE_ARRAY_SIZE];
-
-    SymbolTableEntry *insert(Arena *arena, std::string string, SymbolTableEntry *scope, SymbolTableValue value);
-    uint32_t hash(std::string &string, SymbolTableEntry *scope);
-    SymbolTableEntry *lookup(std::string &string, SymbolTableEntry *scope);
-};
-
-struct CompilerTables {
-    SymbolTable *variable_table;
-    SymbolTable *function_table;
-    SymbolTable *class_table;
-    TypeInfo *builtin_types;
-
-    static CompilerTables init(Arena *arena);
-};
-
-struct BuiltinTypeTable {
-    TypeInfo types_array[(int)TypeInfoType::SIZE];
-    uint32_t index = 0;
-    void init();
 };
 
 #endif // UTILS_H_
