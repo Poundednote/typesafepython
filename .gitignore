@@ -3,4 +3,5 @@ build/
 *.pdb
 .vs/
 *.org
+.clang-format
 Makefile

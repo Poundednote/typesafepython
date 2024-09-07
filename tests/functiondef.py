@@ -3,8 +3,9 @@ def noargs() -> int:
     2 + 2
     return 3+2
 
-def func(a: int = 1, poo: string) -> str:
-    return "hello"
+def func(a: int = 1, poo: str) -> str:
+    "hello" + "hi"
+    return "a"
 
-def func(a: int = 1, b: string, *args, **kwargs) -> str:
+def func(a: int = 1, b: str, *args, **kwargs) -> str:
     return "hello"
