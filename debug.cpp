@@ -1,6 +1,5 @@
 #include "debug.h"
 #include <string>
-
 // this is metatprogramed the enum passed must be marked for introspection
 inline const char *debug_enum_to_string(EnumMemberDefinition *enumMembers, int value_of_enum)
 {
@@ -21,8 +20,7 @@ static void debug_print_node(AstNode *node, uint32_t indent)
 {
         std::string value = "";
 
-        const char *token = debug_enum_to_string(TokenTypeEnumMembers,
-                                                      (int)node->token.type);
+        const char *token = TOKEN_STRINGS[(int)node->token.type];
         value = node->token.value;
 
         if (value == "") {
@@ -36,8 +34,9 @@ static void debug_print_node(AstNode *node, uint32_t indent)
 
         printf("\n");
         debug_print_indent(indent);
-        printf("Token: %s%s%s, value: %s, Node: %s%s%s Type: %s%s%s {", red,
-               token, standard, value.c_str(), green,
+        printf("line: %d, col: %d, Token: %s%s%s, value: %s, Node: %s%s%s Type: %s%s%s {",
+               node->token.line, node->token.column, red, token, standard,
+               value.c_str(), green,
                debug_enum_to_string(AstNodeTypeEnumMembers, (int)node->type),
                standard, blue,
                debug_enum_to_string(TypeInfoTypeEnumMembers,
@@ -69,7 +68,7 @@ static void debug_print_node_struct(StructMemberDefinition *struct_members,
 
 static void debug_print_parse_tree(AstNode *node, uint32_t indent)
 {
-        if (!node) {
+        if (!node || node->type == AstNodeType::INVALID) {
                 return;
         }
 
@@ -314,12 +313,35 @@ static void debug_print_parse_tree(AstNode *node, uint32_t indent)
                 debug_print_node_struct(AstNodeIfExprStructMembers,
                                         array_count(AstNodeIfExprStructMembers),
                                         (void *)(&node->if_expr), indent + 1);
+                break;
 
         case AstNodeType::GEN_EXPR:
                 debug_print_node_struct(AstNodeGenExprStructMembers,
                                         array_count(AstNodeGenExprStructMembers),
                                         (void *)(&node->gen_expr), indent + 1);
+                break;
 
+        case AstNodeType::LAMBDA:
+                debug_print_node_struct(AstNodeLambdaDefStructMembers,
+                                        array_count(AstNodeLambdaDefStructMembers),
+                                        (void *)(&node->lambda), indent + 1);
+                break;
+
+        case AstNodeType::TYPE_PARAM:
+                debug_print_node_struct(AstNodeTypeParamStructMembers,
+                                        array_count(AstNodeTypeParamStructMembers),
+                                        (void *)(&node->type_param), indent + 1);
+                break;
+
+        case AstNodeType::SLICE:
+                debug_print_node_struct(AstNodeSliceStructMembers,
+                                        array_count(AstNodeSliceStructMembers),
+                                        (void *)(&node->slice), indent + 1);
+        case AstNodeType::IDENTIFIER:
+                break;
+
+
+        case AstNodeType::INVALID:
         case AstNodeType::TERMINAL:
                 printf("}");
                 return;

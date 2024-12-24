@@ -3,7 +3,7 @@
 
 #include <stdint.h>
 
-#include "tpython.h"
+#include "main.h"
 #include "tokeniser.h"
 #include "utils.h"
 #include "typing.h"
@@ -11,50 +11,56 @@
 
 struct AstNode;
 struct SymbolTableEntry;
+struct ParseResult;
+struct Parser;
 
-typedef AstNode *(*ParseSingleFunc)(Tokeniser *, Arena *, SymbolTableEntry *,
-                                    CompilerTables *, Arena *);
+typedef ParseResult (*ParseSingleFunc)(Parser *parser);
 
 introspect enum class AstNodeType {
-        FILE = 0,
-        BINARYEXPR = 1,
-        UNARY = 2,
-        NARY = 3,
-        TUPLE = 4,
-        DICT = 5,
-        DICTCOMP = 6,
-        LIST = 7,
-        LISTCOMP = 8,
-        TERMINAL = 9,
-        ASSIGNMENT = 10,
-        BLOCK = 11,
-        DECLARATION = 12,
-        TYPE_ANNOTATION = 13,
-        IF = 14,
-        ELSE = 15,
-        WHILE = 16,
-        FOR_LOOP = 17,
-        FOR_IF = 18,
-        FUNCTION_DEF = 19,
-        CLASS_DEF = 20,
-        FUNCTION_CALL = 21,
-        SUBSCRIPT = 22,
-        ATTRIBUTE_REF = 23,
-        TRY = 24,
-        WITH = 25,
-        WITH_ITEM = 26,
-        EXCEPT = 27,
-        STARRED = 28,
-        KVPAIR = 29,
-        IMPORT = 30,
-        IMPORT_TARGET = 31,
-        FROM = 32,
-        FROM_TARGET = 33,
-        UNION = 34,
-        MATCH = 35,
-        RAISE = 36,
-        IF_EXPR = 37,
-        GEN_EXPR = 38,
+        FILE = 1,
+        BINARYEXPR = 2,
+        UNARY = 3,
+        NARY = 4,
+        TUPLE = 5,
+        DICT = 6,
+        DICTCOMP = 7,
+        LIST = 8,
+        LISTCOMP = 9,
+        TERMINAL = 10,
+        IDENTIFIER = 11,
+        ASSIGNMENT = 12,
+        BLOCK = 13,
+        DECLARATION = 14,
+        TYPE_ANNOTATION = 15,
+        IF = 16,
+        ELSE = 17,
+        WHILE = 18,
+        FOR_LOOP = 19,
+        FOR_IF = 20,
+        FUNCTION_DEF = 21,
+        CLASS_DEF = 22,
+        FUNCTION_CALL = 23,
+        SUBSCRIPT = 24,
+        SLICE = 25,
+        ATTRIBUTE_REF = 26,
+        TRY = 27,
+        WITH = 28,
+        WITH_ITEM = 29,
+        EXCEPT = 30,
+        STARRED = 31,
+        KVPAIR = 32,
+        IMPORT = 33,
+        IMPORT_TARGET = 34,
+        FROM = 35,
+        FROM_TARGET = 36,
+        UNION = 37,
+        MATCH = 38,
+        RAISE = 39,
+        IF_EXPR = 40,
+        GEN_EXPR = 41,
+        LAMBDA = 42,
+        TYPE_PARAM = 43,
+        INVALID = 44,
 };
 
 introspect struct AstNodeUnary {
@@ -71,7 +77,7 @@ introspect struct AstNodeBinaryExpr {
 };
 
 introspect struct AstNodeAssignment {
-        AstNode *name;
+        AstNode *left;
         AstNode *expression;
 };
 
@@ -126,9 +132,17 @@ introspect struct AstNodeWhile {
         AstNode *or_else;
 };
 
+introspect struct AstNodeTypeParam {
+        AstNode *name;
+        AstNode *bound;
+        bool star;
+        bool double_star;
+};
+
 introspect struct AstNodeClassDef {
         AstNode *decarators;
         AstNode *name;
+        AstNode *type_params;
         AstNode *arguments;
         AstNode *block;
 };
@@ -136,12 +150,21 @@ introspect struct AstNodeClassDef {
 introspect struct AstNodeFunctionDef {
         AstNode *decarators;
         AstNode *name;
+        AstNode *type_params;
         AstNode *arguments;
         AstNode *block;
         AstNode *star;
         AstNode *double_star;
         AstNode *return_type;
-        bool has_star;
+        int star_pos;
+        int slash_pos;
+};
+
+introspect struct AstNodeLambdaDef {
+        AstNode *arguments;
+        AstNode *expression;
+        AstNode *star;
+        AstNode *double_star;
 };
 
 introspect struct AstNodeFunctionCall {
@@ -161,10 +184,15 @@ introspect struct AstNodeKvPair {
 
 introspect struct AstNodeSubscript {
         AstNode *expression;
+        AstNode *slices;
+
+};
+
+introspect struct AstNodeSlice {
         AstNode *start;
         AstNode *end;
         AstNode *step;
-
+        AstNode *named_expr;
 };
 
 introspect struct AstNodeTry {
@@ -280,6 +308,7 @@ struct AstNode {
                 AstNodeFunctionCall function_call;
                 AstNodeClassDef class_def;
                 AstNodeSubscript subscript;
+                AstNodeSlice slice;
                 AstNodeAttributeRef attribute_ref;
                 AstNodeTry try_node;
                 AstNodeWithItem with_item;
@@ -300,6 +329,8 @@ struct AstNode {
                 AstNodeRaise raise;
                 AstNodeIfExpr if_expr;
                 AstNodeGenExpr gen_expr;
+                AstNodeLambdaDef lambda;
+                AstNodeTypeParam type_param;
         };
 
         AstNode *adjacent_child = nullptr;
@@ -310,143 +341,89 @@ struct AstNode {
                                      AstNode *right);
 };
 
-static inline AstNode *parse_atom(Tokeniser *tokeniser, Arena *ast_arena,
-                                  SymbolTableEntry *scope,
-                                  CompilerTables *compiler_tables,
-                                  Arena *symbol_table_arena);
-static inline AstNode *parse_next_expression_into_child(
-        Tokeniser *tokeniser, Arena *ast_arena, SymbolTableEntry *scope,
-        CompilerTables *compiler_tables, Arena *symbol_table_arena);
-static inline AstNode *parse_next_star_expression_into_child(
-        Tokeniser *tokeniser, Arena *ast_arena, SymbolTableEntry *scope,
-        CompilerTables *compiler_tables, Arena *symbol_table_arena);
+introspect enum class ParseErrorType {
+        NONE = 0,
+        INVALID_SYNTAX = 2,
+        GENERAL = 3,
+};
 
-static AstNode *parse_class_def(Tokeniser *tokeniser, Arena *ast_arena,
-                                SymbolTableEntry *scope,
-                                CompilerTables *compiler_tables,
-                                Arena *symbol_table_arena);
-static AstNode *parse_function_def(Tokeniser *tokeniser, Arena *ast_arena,
-                                   SymbolTableEntry *scope,
-                                   CompilerTables *compiler_tables,
-                                   Arena *symbol_table_arena);
-static inline AstNode *parse_left(Tokeniser *tokeniser, Arena *ast_arena,
-                                  SymbolTableEntry *scope,
-                                  CompilerTables *compiler_tables,
-                                  Arena *symbol_table_arena);
-static AstNode *parse_dotted_name(Tokeniser *tokeniser, Arena *ast_arena,
-                                  SymbolTableEntry *scope,
-                                  CompilerTables *compiler_tables,
-                                  Arena *symbol_table_arena);
-static AstNode *parse_block(Tokeniser *tokeniser, Arena *ast_arena,
-                            SymbolTableEntry *scope,
-                            CompilerTables *compiler_tables,
-                            Arena *symbol_table_arena);
-static AstNode *parse_statements(Tokeniser *tokeniser, Arena *ast_arena,
-                                 SymbolTableEntry *scope,
-                                 CompilerTables *compiler_tables,
-                                 Arena *symbol_table_arena);
-static AstNode *parse_statement(Tokeniser *tokeniser, Arena *ast_arena,
-                                SymbolTableEntry *scope,
-                                CompilerTables *compiler_tables,
-                                Arena *symbol_table_arena);
-static AstNode *parse_star_expression(Tokeniser *tokeniser, Arena *ast_arena,
-                                      SymbolTableEntry *scope,
-                                      CompilerTables *compiler_tables,
-                                      Arena *symbol_table_arena);
+struct ParseError {
+        ParseErrorType type;
+        Token *token;
+        const char *msg;
+};
 
-static AstNode *parse_inc_precedence_minimum_bitwise_or_precedence(
-        Tokeniser *tokeniser, Arena *ast_arena, AstNode *left,
-        SymbolTableEntry *scope, CompilerTables *compiler_tables,
-        Arena *symbol_table_arena, int min_precedence);
+struct ParseResult {
+        AstNode *node; 
+        ParseError error;
+};
 
-static AstNode *parse_bitwise_or_minimum_precedence(
-        Tokeniser *tokeniser, Arena *ast_arena, SymbolTableEntry *scope,
-        CompilerTables *compiler_tables, Arena *symbol_table_arena,
-        int min_precedence);
+struct Parser {
+        TokenArray *token_arr;
+        Arena *ast_arena;
+        SymbolTableEntry *scope;
+        Tables *tables;
+        Arena *symbol_table_arena;
+};
 
-static AstNode *parse_expression(Tokeniser *tokeniser, Arena *ast_arena,
-                                 SymbolTableEntry *scope,
-                                 CompilerTables *compiler_tables,
-                                 Arena *symbol_table_arena, int min_precedence);
-static AstNode *parse_disjunction(Tokeniser *tokeniser, Arena *ast_arena,
-                                 SymbolTableEntry *scope,
-                                 CompilerTables *compiler_tables,
-                                 Arena *symbol_table_arena, int min_precedence);
-static AstNode *parse_increasing_precedence(Tokeniser *tokeniser,
-                                            Arena *ast_arena, AstNode *left,
-                                            SymbolTableEntry *scope,
-                                            CompilerTables *compiler_tables,
-                                            Arena *symbol_table_arena,
-                                            int min_precedence);
-static AstNode *parse_assignment_or_declaration(Tokeniser *tokeniser, Arena *ast_arena,
-                                 SymbolTableEntry *scope,
-                                 CompilerTables *compiler_tables,
-                                 Arena *symbol_table_arena, AstNode *left);
-static AstNode *parse_single_assignment_expression(
-        Tokeniser *tokeniser, Arena *ast_arena, SymbolTableEntry *scope,
-        CompilerTables *compiler_tables, Arena *symbol_table_arena);
+static AstNode *node_alloc(Arena *ast_arena);
+static ParseResult parse_atom(Parser *parser, bool add_to_symbol_table);
+static ParseResult parse_next_expression_into_child(Parser *parser);
+static ParseResult
+parse_next_star_expression_into_child(Parser *parser);
 
-static AstNode *parse_single_assignment_star_expression(
-        Tokeniser *tokeniser, Arena *ast_arena, SymbolTableEntry *scope,
-        CompilerTables *compiler_tables, Arena *symbol_table_arena);
+static ParseResult parse_class_def(Parser *parser);
+static ParseResult parse_function_def(Parser *parser);
+static inline ParseResult parse_left(Parser *parser);
+static ParseResult parse_dotted_name(Parser *parser);
+static ParseResult parse_block(Parser *parser);
+static ParseResult parse_statements(Parser *parser);
+static ParseResult parse_statement(Parser *parser);
+static ParseResult parse_star_expression(Parser *parser);
 
-static AstNode *parse_single_double_starred_kvpair(
-        Tokeniser *tokeniser, Arena *ast_arena, SymbolTableEntry *scope,
-        CompilerTables *compiler_tables, Arena *symbol_table_arena);
-static AstNode *parse_double_starred_kvpairs(Tokeniser *tokeniser,
-                                             Arena *ast_arena,
-                                             SymbolTableEntry *scope,
-                                             CompilerTables *compiler_tables,
-                                             Arena *symbol_table_arena);
-static AstNode *parse_assignment_star_expressions(
-        Tokeniser *tokeniser, Arena *ast_arena, SymbolTableEntry *scope,
-        CompilerTables *compiler_tables, Arena *symbol_table_arena,
-        bool wrap_in_tuple);
-static AstNode *parse_primary(Tokeniser *tokeniser, Arena *ast_arena,
-                              SymbolTableEntry *scope,
-                              CompilerTables *compiler_tables,
-                              Arena *symbol_table_arena);
-static AstNode *parse_sub_primary(Tokeniser *tokeniser, Arena *ast_arena,
-                                  AstNode *left, SymbolTableEntry *scope,
-                                  CompilerTables *compiler_tables,
-                                  Arena *symbol_table_arena);
-static AstNode *parse_elif(Tokeniser *tokeniser, Arena *ast_arena,
-                           SymbolTableEntry *scope,
-                           CompilerTables *compiler_tables,
-                           Arena *symbol_table_arena);
-static AstNode *parse_else(Tokeniser *tokeniser, Arena *ast_arena,
-                           SymbolTableEntry *scope,
-                           CompilerTables *compiler_tables,
-                           Arena *symbol_table_arena);
-static AstNode *parse_star_target(Tokeniser *tokeniser, Arena *ast_arena,
-                                  SymbolTableEntry *scope,
-                                  CompilerTables *compiler_tables,
-                                  Arena *symbol_table_arena);
+static ParseResult parse_inc_precedence_minimum_bitwise_or_precedence(
+Parser *parser);
 
-static inline void assert_comma_and_skip_over(Tokeniser *tokeniser);
-static AstNode *parse_function_def_arguments(Tokeniser *tokeniser,
-                                             Arena *ast_arena,
-                                             AstNodeFunctionDef *function,
-                                             SymbolTableEntry *scope,
-                                             CompilerTables *compiler_tables,
-                                             Arena *symbol_table_arena);
-static AstNode *parse_function_call_arguments(Tokeniser *tokeniser,
-                                              Arena *ast_arena,
-                                              SymbolTableEntry *scope,
-                                              CompilerTables *compiler_tables,
-                                              Arena *symbol_table_arena);
-static AstNode *parse_gen_expr_from_first_child(Tokeniser *tokeniser,
-                                                Arena *ast_arena,
-                                                SymbolTableEntry *scope,
-                                                CompilerTables *compiler_tables,
-                                                Arena *symbol_table_arena,
-                                                AstNode *first_child);
+static ParseResult parse_bitwise_or_minimum_precedence(Parser *parser, 
+                                                       int min_precedence);
 
-static AstNode *parse_type_expression(Tokeniser *tokeniser, Arena *ast_arena);
-static AstNode *parse_type_annotation(Tokeniser *tokeniser, Arena *ast_arena);
-static AstNode *parse_single_subscript_attribute_primary(
-        Tokeniser *tokeniser, Arena *ast_arena, SymbolTableEntry *scope,
-        CompilerTables *compiler_tables, Arena *symbol_table_arena);
+static ParseResult parse_expression(Parser *parser, int min_precedence);
+static ParseResult parse_disjunction(Parser *parser, int min_precedence);
+static ParseResult parse_increasing_precedence(Parser *parser);
+static ParseResult 
+parse_assignment_or_declaration(Parser *parser, AstNode *left);
+static ParseResult parse_single_assignment_expression(Parser *parser);
+
+static ParseResult 
+parse_single_assignment_star_expression(Parser *parser);
+
+static ParseResult parse_single_double_starred_kvpair(Parser *parser);
+static ParseResult parse_double_starred_kvpairs(Parser *parser);
+static ParseResult parse_assignment_star_expressions(Parser *parser, 
+                                                     bool wrap_in_tuple);
+static ParseResult parse_primary(Parser *parser);
+
+static ParseResult parse_sub_primary(Parser *parser, AstNode *left, bool add_to_symbol_table);
+static ParseResult parse_elif(Parser *parser);
+static ParseResult parse_else(Parser *parser);
+static ParseResult parse_star_target(Parser *parser);
+
+static ParseResult assert_comma_and_skip_over(Parser *parser);
+static ParseResult assert_token_and_print_debug(Parser *parser);
+static ParseResult parse_function_def_arguments(Parser *parser, AstNodeFunctionDef *function);
+static ParseResult parse_function_call_arguments(Parser *parser);
+static ParseResult parse_gen_expr_from_first_child(Parser *parser, AstNode *first_child);
+
+static ParseResult parse_single_star_target(Parser *parser,
+                                            bool add_to_symbol_table = false);
+
+static ParseResult parse_type_expression(Parser *parser);
+static ParseResult parse_type_annotation(Parser *parser);
+static ParseResult parse_single_subscript_attribute_primary(Parser *parser, 
+                                                            bool add_to_symbol_table = false);
+static ParseResult parse_name(Parser *parser, bool add_to_symbol_table = false);
+void handle_errors_and_assert_end(Parser *parser, ParseResult *result);
+void token_array_goto_end_of_statement(TokenArray *token_array);
 
 static inline bool expect_token(enum TokenType type, Token *token,
                                 char *message);

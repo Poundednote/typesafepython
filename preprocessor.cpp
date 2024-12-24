@@ -1,7 +1,6 @@
 #include <stdio.h>
 #include <stdint.h>
 #include <stdlib.h>
-
 struct Tokeniser {
         char *at;
 };
@@ -113,11 +112,11 @@ void parse_struct_members(Tokeniser *tokeniser, char *struct_name, int name_size
                 if (match_key_word(tokeniser, "*", 1)) {
                         const char *pointer = "_PTR";
 
-                        for (;bytes_written < sizeof(buffer);
-                             ++bytes_written) {
+                        for (int i = 0; bytes_written < sizeof(buffer) &&
+                                        i < sizeof("_PTR") - 1;
+                             ++bytes_written, ++i) {
                                 buffer[bytes_written] = *(pointer++);
                         }
-
                 }
 
                 printf("{TYPE_%.*s, ", bytes_written,
@@ -181,7 +180,7 @@ void parse_enum(Tokeniser *tokeniser)
                        *(tokeniser->at) != ',') {
                         if (bytes_written >=
                             sizeof(buffer)) {
-                                perror("buffer too smalle for name");
+                                perror("buffer too small for name");
                                 bytes_written = 0;
                                 break;
                         }

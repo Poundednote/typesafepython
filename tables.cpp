@@ -5,7 +5,7 @@
 
 // FIXME: I took this hash function of stackoverflow please
 // replace with something that is more secure and robust after more research
-inline uint32_t SymbolTable::hash(std::string &string, SymbolTableEntry *scope)
+uint32_t SymbolTable::hash(std::string &string, SymbolTableEntry *scope)
 {
         uint32_t hash = 0;
         for (int i = 0; i < string.length(); ++i) {
@@ -23,7 +23,7 @@ inline uint32_t SymbolTable::hash(std::string &string, SymbolTableEntry *scope)
         return hash % SYMBOL_TABLE_ARRAY_SIZE;
 }
 
-inline SymbolTableEntry *SymbolTable::lookup(std::string &string,
+SymbolTableEntry *SymbolTable::lookup(std::string &string,
                                              SymbolTableEntry *scope)
 {
         SymbolTableEntry *entry = &this->table[hash(string, scope)];
@@ -48,7 +48,7 @@ inline SymbolTableEntry *SymbolTable::lookup(std::string &string,
         return nullptr;
 }
 
-inline SymbolTableEntry *SymbolTable::insert(Arena *arena, std::string string,
+SymbolTableEntry *SymbolTable::insert(Arena *arena, std::string string,
                                              SymbolTableEntry *scope,
                                              SymbolTableValue *value)
 {
@@ -75,32 +75,53 @@ inline SymbolTableEntry *SymbolTable::insert(Arena *arena, std::string string,
                 new_entry = new_entry->next_in_table;
         }
 
+        // FIXME: find out why this isn't initilising std::string correctly
+        *new_entry = SymbolTableEntry();
         new_entry->key.identifier = string;
         new_entry->key.scope = scope;
         new_entry->value = *value;
 
-        assert(new_entry->value.node != nullptr);
+//        assert(new_entry->value.node != nullptr);
 
         return new_entry;
 }
 
-inline CompilerTables CompilerTables::init(Arena *arena)
+SymbolTableEntry *SymbolTable::insert_function(Arena *arena, std::string string,
+                                               SymbolTableEntry *scope,
+                                               SymbolTableValue *value)
 {
-        CompilerTables compiler_tables = {};
-        compiler_tables.variable_table = (SymbolTable *)arena->alloc(
-                sizeof(*compiler_tables.variable_table) * 3);
-        // placement new to call constructors without allocating on stack
-        new (compiler_tables.variable_table) SymbolTable();
-        compiler_tables.function_table = compiler_tables.variable_table + 1;
-        new (compiler_tables.function_table) SymbolTable();
-        compiler_tables.class_table = compiler_tables.variable_table + 2;
-        new (compiler_tables.class_table) SymbolTable();
-        compiler_tables.builtin_types = (TypeInfo *)arena->alloc(
-                sizeof((*builtin_types)) * (int)TypeInfoType::SIZE);
+        SymbolTableEntry *entry = this->insert(arena, string, scope, value);
+
+        entry->value.static_type.function.custom_symbol = entry;
+
+        return entry;
+}
+
+Tables Tables::init(Arena *arena)
+{
+        Tables tables = Tables();
+        tables.symbol_table =
+                (SymbolTable *)arena->alloc(sizeof(SymbolTable));
+        // use placement new for initilisation because calling symbol tables
+        // constructor naively causes a copy
+        // of the entire struct on the stack and can cause overflow
+        // FIXME: find out why this isn't initilising std::string correctly
+        new (tables.symbol_table) SymbolTable();
+
+        tables.import_list =
+                (ImportList *)arena->alloc(sizeof(*tables.import_list));
+        new (tables.symbol_table) ImportList();
+
+        tables.builtin_types = (TypeInfo *)arena->alloc(
+                sizeof(*tables.builtin_types) * (int)TypeInfoType::SIZE);
+
+        tables.symbol_table =
+                (SymbolTable *)arena->alloc(sizeof(*tables.symbol_table));
 
         for (int i = 0; i < (int)TypeInfoType::SIZE; ++i) {
-                compiler_tables.builtin_types[i].type = (TypeInfoType)i;
+                new (&tables.builtin_types[i]) TypeInfo();
+                tables.builtin_types[i].type = (TypeInfoType)i;
         }
 
-        return compiler_tables;
+        return tables;
 }

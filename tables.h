@@ -6,7 +6,7 @@
 #include "typing.h"
 #include "utils.h"
 
-#define SYMBOL_TABLE_ARRAY_SIZE (4096)
+#define SYMBOL_TABLE_ARRAY_SIZE 4096
 
 struct SymbolTableEntry;
 struct AstNode;
@@ -34,18 +34,25 @@ struct SymbolTable {
         SymbolTableEntry *insert(Arena *arena, std::string string,
                                  SymbolTableEntry *scope,
                                  SymbolTableValue *value);
+        SymbolTableEntry *insert_function(Arena *arena, std::string string,
+                                 SymbolTableEntry *scope,
+                                 SymbolTableValue *value);
         uint32_t hash(std::string &string, SymbolTableEntry *scope);
         SymbolTableEntry *lookup(std::string &string, SymbolTableEntry *scope);
 };
 
-//TODO bounds checking for builtin_type_table
-struct CompilerTables {
-        SymbolTable *variable_table;
-        SymbolTable *function_table;
-        SymbolTable *class_table;
-        TypeInfo *builtin_types;
+struct ImportList {
+        AstNode *list[4096];
+        uint64_t list_index = 0;
+};
 
-        static CompilerTables init(Arena *arena);
+//TODO bounds checking for builtin_type_table
+struct Tables {
+        SymbolTable *symbol_table;
+        //TODO make these globals
+        TypeInfo *builtin_types;
+        ImportList *import_list;
+        static Tables init(Arena *arena);
 };
 
 #endif // SYMBOLTABLE_H_

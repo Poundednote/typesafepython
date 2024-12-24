@@ -1,14 +1,22 @@
 #include <cstdint>
 #include <assert.h>
-
 #include "parser.h"
 #include "tokeniser.h"
 #include "typing.h"
 #include "tables.h"
 #include "debug.h"
+#include <stdint.h>
 
+// NOTE: THIS needs to be read only do not ever modify it ever 
+static AstNode ERR_NODE = {.type = AstNodeType::INVALID};
+
+// TODO: FIGURE OUT T_PRIMARY PARSING
+//
+//
+//
+// TODO: fix semicolons and newlines for blocks
+// and make it so that when invalid syntax occurs move to the next newline or semicolon
 // TODO: MATCH STATMENTS
-// TODO: tuple assignments and other assignments
 // TODO: slash arguments
 // TODO: negative numbers unary operator
 // TODO: YIELD STATMENTS
@@ -16,51 +24,66 @@
 // TODO: Augmented assign e.g. += -= stuff
 // TODO: Test parenthesis and atom parsing
 // TODO: enforce declarations to assign= Baby()
+// TODO: allow , at the end of sequences with no next item
 //
 //NOTE: python grammar reference
 //https://docs.python.org/3/reference/grammar.html
 //
-
-static inline void parser_exit_with_error_msg(const char *message,
-                                              Tokeniser *tokeniser)
-{
-        fprintf_s(stderr, "Syntax Error: line: %d col %d\n%s",
-                  tokeniser->last_returned.line,
-                  tokeniser->last_returned.column, message);
-        exit(1);
-}
-
-static inline AstNode *node_alloc(Arena *ast_arena)
+static AstNode *node_alloc(Arena *ast_arena)
 {
         AstNode *allocated_node =
-                (AstNode *)ast_arena->alloc(sizeof(*allocated_node));
+                (AstNode *)ast_arena->alloc(sizeof(AstNode));
         // call constructor because AstNode contains std::string .....
         *allocated_node = AstNode();
 
         return allocated_node;
 }
 
-static SymbolTableEntry *assert_no_redefinition_and_insert_to_symbol_table(
-        Arena *table_arena, SymbolTable *table, SymbolTableEntry *scope,
-        Token *symbol, SymbolTableValue *value)
+static ParseResult parser_create_error_from_msg(Parser *parser, 
+                                                const char *message)
 {
-        if (table->lookup(symbol->value, scope)) {
-                fprintf_s(
-                        stderr,
-                        "Parsing Error: line: %d, col: %d redefinition of '%s'",
-                        symbol->line, symbol->column, symbol->value.c_str());
-                exit(1);
-        }
+        ParseError error = {};
+        error.type = ParseErrorType::GENERAL;
+        error.token = &parser->token_arr->tokens[parser->token_arr->position];
+        error.msg = message;
 
-        return table->insert(table_arena, symbol->value, scope, value);
+        ParseResult result = {};
+        result.node = node_alloc(parser->ast_arena);
+        *result.node = ERR_NODE;
+        result.error = error;
+
+        return result;
 }
 
-static inline AstNode *parse_single_token_into_node(Tokeniser *tokeniser,
-                                                    Arena *ast_arena)
+static SymbolTableEntry *assert_no_redefinition_and_insert_to_symbol_table(
+        Arena *table_arena, SymbolTable *table, SymbolTableEntry *scope,
+        Token *symbol, SymbolTableValue *value, bool func)
 {
-        AstNode *node = node_alloc(ast_arena);
-        node->token = tokeniser->last_returned;
-        tokeniser->next_token();
+        SymbolTableEntry *entry = table->lookup(symbol->value, scope);
+        if (entry) {
+#if NOREDEF
+                fprintf_s(
+                        stderr,
+                        "Syntax Error: line: %d, col: %d redefinition of '%s'",
+                        symbol->line, symbol->column, symbol->value.c_str());
+                exit(1);
+#else
+                entry->value = *value;
+                return entry;
+#endif
+        }
+
+        if (!func)
+                return table->insert(table_arena, symbol->value, scope, value);
+
+        return table->insert_function(table_arena, symbol->value, scope, value);
+}
+
+static AstNode *parse_single_token_into_node(Parser *parser)
+{
+        AstNode *node = node_alloc(parser->ast_arena);
+        node->token = parser->token_arr->current;
+        parser->token_arr->next_token();
         return node;
 }
 
@@ -87,268 +110,500 @@ inline AstNode AstNode::create_binary(Token token, AstNode *left,
         return node;
 }
 
-static inline void assert_token_and_print_debug(enum TokenType type,
-                                                Token token,
+static ParseResult assert_token_and_print_debug(Parser *parser,
+                                                enum TokenType type,
                                                 const char *message)
 {
+        Token token = parser->token_arr->current;
         if (token.type != type) {
-                fprintf_s(
-                        stderr,
-                        "Syntax Error: line: %d col %d\nExpected Token '%s' instead of "
-                        "'%s'\n",
-                        token.line, token.column,
-                        debug_enum_to_string(TokenTypeEnumMembers, (int)type),
-                        debug_enum_to_string(TokenTypeEnumMembers,
-                                             (int)token.type));
+                char buffer[1024] = {};
+                snprintf(buffer, sizeof(buffer), "%s Expected Token '%s' instead of '%s'",
+                         message,
+                         TOKEN_STRINGS[(int)type],
+                         TOKEN_STRINGS[(int)parser->token_arr->current.type]);
 
-                fprintf_s(stderr, "%s\n", message);
-                exit(1);
+                return parser_create_error_from_msg(parser, buffer);
+                
         }
+
+        return ParseResult{};
 }
 
-static inline void eat_newlines(Tokeniser *tokeniser)
-{
-        while (tokeniser->last_returned.type == TokenType::NEWLINE)
-                tokeniser->next_token();
-}
-
-static AstNode *wrap_in_tuple(Tokeniser *tokeniser, Arena *ast_arena,
+static AstNode *wrap_in_tuple(Parser *parser,
                               AstNode *head)
 {
-        AstNode *node = node_alloc(ast_arena);
+        AstNode *node = node_alloc(parser->ast_arena);
         node->type = AstNodeType::TUPLE;
-        node->token = tokeniser->last_returned;
+        node->token = parser->token_arr->current;
         node->tuple.children = head;
         return node;
 }
 
-static AstNode *parse_single_target(Tokeniser *tokeniser, Arena *ast_arena,
-                                    SymbolTableEntry *scope,
-                                    CompilerTables *compiler_tables,
-                                    Arena *symbol_table_arena)
+static ParseResult parse_single_target(Parser *parser)
 {
-        if (tokeniser->last_returned.type == TokenType::OPEN_PAREN) {
-                AstNode *result = parse_single_target(tokeniser, ast_arena,
-                                                      scope, compiler_tables,
-                                                      symbol_table_arena);
-                assert_token_and_print_debug(TokenType::CLOSED_PAREN,
-                                             tokeniser->last_returned,
-                                             "Mistmatched parenthesis");
+        if (parser->token_arr->current.type == TokenType::OPEN_PAREN) {
+                ParseResult result = parse_single_target(parser);
+
+                ParseResult assert_result = assert_token_and_print_debug(
+                        parser, TokenType::CLOSED_PAREN,
+                        "Mistmatched parenthesis");
+
+                if (assert_result.error.type != ParseErrorType::NONE)
+                        return assert_result;
+
                 return result;
         }
 
-        return parse_single_subscript_attribute_primary(tokeniser, ast_arena,
-                                                        scope, compiler_tables,
-                                                        symbol_table_arena);
+        return parse_single_subscript_attribute_primary(parser);
 }
 
-static AstNode *parse_comma_seperated_func(Tokeniser *tokeniser,
-                                           Arena *ast_arena,
-                                           SymbolTableEntry *scope,
-                                           CompilerTables *compiler_tables,
-                                           Arena *symbol_table_arena,
-                                           ParseSingleFunc func)
+static ParseResult 
+parse_comma_seperated_func(Parser *parser, ParseSingleFunc func)
 {
-        AstNode *head = func(tokeniser, ast_arena, scope, compiler_tables,
-                             symbol_table_arena);
+        ParseResult result =
+                func(parser);
+
+        if (result.error.type != ParseErrorType::NONE)
+                return result;
+
+        AstNode *head = result.node;
 
         AstNode **child = &head->adjacent_child;
 
-        while (tokeniser->last_returned.type == TokenType::COMMA) {
-                tokeniser->next_token();
-                if (tokeniser->paren_count) {
-                        eat_newlines(tokeniser);
-                }
-                *child = func(tokeniser, ast_arena, scope, compiler_tables,
-                              symbol_table_arena);
+        while (parser->token_arr->current.type == TokenType::COMMA) {
+                parser->token_arr->next_token();
+                result = func(parser);
+
+                if (result.error.type != ParseErrorType::NONE)
+                        return result;
+
+                *child = result.node;
                 child = &((*child)->adjacent_child);
         }
 
-        return head;
+        return ParseResult{.node = head};
 }
 
-static AstNode *parse_comma_seperated_in_tuple_func(
-        Tokeniser *tokeniser, Arena *ast_arena, SymbolTableEntry *scope,
-        CompilerTables *compiler_tables, Arena *symbol_table_arena,
-        ParseSingleFunc func)
+static ParseResult parse_comma_seperated_in_tuple_func(Parser *parser, ParseSingleFunc func)
 {
-        AstNode *head = func(tokeniser, ast_arena, scope, compiler_tables,
-                             symbol_table_arena);
+        ParseResult result =
+                func(parser);
 
-        if (tokeniser->last_returned.type != TokenType::COMMA) {
-                return head;
+        if (result.error.type != ParseErrorType::NONE)
+                return result;
+
+        AstNode *head = result.node;
+
+        if (parser->token_arr->current.type != TokenType::COMMA) {
+                return ParseResult{.node = head};
         }
 
-        AstNode *tuple = wrap_in_tuple(tokeniser, ast_arena, head);
+        AstNode *tuple = wrap_in_tuple(parser, head);
         AstNode **child = &tuple->tuple.children->adjacent_child;
 
-        while (tokeniser->last_returned.type == TokenType::COMMA) {
-                tokeniser->next_token();
-                if (tokeniser->paren_count) {
-                        eat_newlines(tokeniser);
-                }
-                *child = func(tokeniser, ast_arena, scope, compiler_tables,
-                              symbol_table_arena);
+        while (parser->token_arr->current.type == TokenType::COMMA) {
+                parser->token_arr->next_token();
+                result = func(parser);
+
+                if (result.error.type != ParseErrorType::NONE)
+                        return result;
+
+                *child = result.node;
                 child = &((*child)->adjacent_child);
         }
 
-        return tuple;
+        return ParseResult{.node = tuple};
 }
 
-static inline AstNode *parse_name(Tokeniser *tokeniser, Arena *ast_arena)
+static ParseResult parse_name(Parser *parser, bool add_to_symbol_table)
 {
-        assert_token_and_print_debug(TokenType::IDENTIFIER,
-                                     tokeniser->last_returned,
-                                     "Failed to parse name");
+        ParseResult assert_result = assert_token_and_print_debug(
+                parser, TokenType::IDENTIFIER, "Failed to parse name");
 
-        AstNode *name = node_alloc(ast_arena);
-        name->token = tokeniser->last_returned;
-        tokeniser->next_token();
-        return name;
+        if (assert_result.error.type != ParseErrorType::NONE)
+                return assert_result;
+
+        AstNode *name = node_alloc(parser->ast_arena);
+        name->type = AstNodeType::IDENTIFIER;
+        name->token = parser->token_arr->current;
+        parser->token_arr->next_token();
+        return ParseResult{.node = name};
 }
 
-static AstNode *parse_list_of_names_and_return_modifier(Tokeniser *tokeniser,
-                                                        Arena *ast_arena,
-                                                        Token token)
+static ParseResult parse_list_of_names_and_return_modifier(Parser *parser,
+                                                           Token token)
 {
-        AstNode *parent = node_alloc(ast_arena);
+        AstNode *parent = node_alloc(parser->ast_arena);
         parent->type = AstNodeType::NARY;
         parent->token = token;
-        AstNode *current_child =
-                parse_name(tokeniser, ast_arena); // parse first child
+        ParseResult result =
+                parse_name(parser, false); 
+
+        if (result.error.type != ParseErrorType::NONE) {
+                return result;
+        }
+
+        AstNode *current_child = result.node;
+
         AstNode *head_child = current_child;
-        while (tokeniser->last_returned.type == TokenType::COMMA) {
-                tokeniser->next_token();
-                AstNode *name = parse_name(tokeniser, ast_arena);
+        while (parser->token_arr->current.type == TokenType::COMMA) {
+                parser->token_arr->next_token();
+                result = parse_name(parser, false);
+
+                if (result.error.type != ParseErrorType::NONE) {
+                        return result;
+                }
+                
+                AstNode *name = result.node;
+
                 current_child->adjacent_child = name;
                 current_child = current_child->adjacent_child;
         }
 
         parent->nary.children = head_child;
-        return parent;
+        return ParseResult{.node = parent};
 }
 
-static AstNode *parse_type_expression(Tokeniser *tokeniser, Arena *ast_arena)
+static ParseResult parse_type_expression(Parser *parser)
 {
-        AstNode *node = node_alloc(ast_arena);
-        Token current_token = tokeniser->last_returned;
-        Token next_token = tokeniser->lookahead;
+        AstNode *node = node_alloc(parser->ast_arena);
+        Token current_token = parser->token_arr->current;
+        Token next_token = parser->token_arr->lookahead;
 
         node->type = AstNodeType::TYPE_ANNOTATION;
         node->token = current_token;
-        node->type_annotation.type = parse_name(tokeniser, ast_arena);
+        ParseResult result = parse_name(parser, false);
+
+        if (result.error.type != ParseErrorType::NONE) {
+                return result;
+        }
+
+        node->type_annotation.type = result.node;
 
         if (next_token.type == TokenType::SQUARE_OPEN_PAREN) {
-                tokeniser->next_token();
+                parser->token_arr->next_token();
                 AstNode **child = &node->type_annotation.parameters;
-                while (tokeniser->last_returned.type !=
+                while (parser->token_arr->current.type !=
                        TokenType::SQUARE_CLOSED_PAREN) {
-                        *child = parse_type_annotation(tokeniser, ast_arena);
 
-                        if (tokeniser->last_returned.type ==
+                        result = parse_type_annotation(parser);
+
+                        if (result.error.type != ParseErrorType::NONE) {
+                                return result;
+                        }
+
+                        *child = result.node;
+
+                        if (parser->token_arr->current.type ==
                             TokenType::SQUARE_CLOSED_PAREN) {
                                 break;
                         }
 
                         child = &((*child)->adjacent_child);
 
-                        assert_comma_and_skip_over(tokeniser);
+                        assert_comma_and_skip_over(parser);
                 }
 
-                tokeniser->next_token();
+                parser->token_arr->next_token();
         }
 
-        return node;
+        return ParseResult{.node = node};
 }
 
-static AstNode *parse_type_annotation(Tokeniser *tokeniser, Arena *ast_arena)
+static ParseResult parse_type_annotation(Parser *parser)
 {
-        AstNode *left = parse_type_expression(tokeniser, ast_arena);
+        ParseResult result = parse_type_expression(parser);
+        if (result.error.type != ParseErrorType::NONE) {
+                return result;
+        }
 
-        if (tokeniser->last_returned.type == TokenType::BWOR) {
-                AstNode *union_type = node_alloc(ast_arena);
+        AstNode *left = result.node;
+
+        if (parser->token_arr->current.type == TokenType::BWOR) {
+                AstNode *union_type = node_alloc(parser->ast_arena);
                 union_type->type = AstNodeType::UNION;
-                union_type->token = tokeniser->last_returned;
+                union_type->token = parser->token_arr->current;
                 union_type->union_type.left = left;
-                tokeniser->next_token();
-                union_type->union_type.right =
-                        parse_type_annotation(tokeniser, ast_arena);
+                parser->token_arr->next_token();
+                result = parse_type_annotation(parser);
 
-                return union_type;
+                if (result.error.type != ParseErrorType::NONE)
+                        return result;
+
+                union_type->union_type.right = result.node;
+
+                return ParseResult{.node = union_type};
         } else {
-                return left;
+                return ParseResult{.node = left};
         }
 }
 
-static AstNode *parse_single_star_target(Tokeniser *tokeniser, Arena *ast_arena,
-                                         SymbolTableEntry *scope,
-                                         CompilerTables *compiler_tables,
-                                         Arena *symbol_table_arena)
+static ParseResult 
+parse_target_with_star_atom(Parser *parser, bool add_to_symbol_table)
 {
-        if (tokeniser->last_returned.type == TokenType::MULTIPLICATION) {
-                AstNode *starred_target = node_alloc(ast_arena);
-                starred_target->type = AstNodeType::STARRED;
-                starred_target->token = tokeniser->last_returned;
-                tokeniser->next_token();
-                starred_target->star_expression.expression =
-                        parse_single_star_target(tokeniser, ast_arena, scope,
-                                                 compiler_tables,
-                                                 symbol_table_arena);
-                return starred_target;
-        } else if (tokeniser->last_returned.type == TokenType::EXPONENTIATION) {
-                parser_exit_with_error_msg(
-                        "Star targets cannot be double starred", tokeniser);
-        }
+        if (parser->token_arr->current.type == TokenType::OPEN_PAREN) {
+                parser->token_arr->next_token();
 
-        return parse_single_subscript_attribute_primary(tokeniser, ast_arena,
-                                                        scope, compiler_tables,
-                                                        symbol_table_arena);
+
+                if (parser->token_arr->current.type == TokenType::MULTIPLICATION) {
+                        parser->token_arr->next_token();
+
+                        AstNode *tuple = node_alloc(parser->ast_arena);
+                        tuple->type = AstNodeType::TUPLE;
+
+                        ParseResult result = parse_single_star_target(parser);
+
+                        if (result.error.type != ParseErrorType::NONE) {
+                                return result;
+                        }
+
+                        AstNode *head = result.node;
+                        tuple->tuple.children = head;
+
+                        AstNode **child = &head->adjacent_child;
+
+                        if (parser->token_arr->current.type != TokenType::COMMA) {
+                                return parser_create_error_from_msg(parser,
+                                        "Cannot use starred expression here");
+                        }
+
+                        while (parser->token_arr->current.type ==
+                               TokenType::COMMA) {
+                                parser->token_arr->next_token();
+
+                                if (parser->token_arr->current.type ==
+                                    TokenType::CLOSED_PAREN)
+                                        break;
+
+                                result = parse_single_star_target(parser, add_to_symbol_table);
+
+                                if (result.error.type != ParseErrorType::NONE) {
+                                        return result;
+                                }
+
+                                *child = result.node;
+                                child = &((*child)->adjacent_child);
+                        }
+
+                        ParseResult assert_result =
+                                assert_token_and_print_debug(
+                                        parser,
+                                        TokenType::CLOSED_PAREN,
+                                        "Mismatched Parenthesis");
+
+                        if (assert_result.error.type != ParseErrorType::NONE)
+                                return assert_result;
+
+                        parser->token_arr->next_token();
+                        return ParseResult{.node = tuple};
+
+                } else {
+                        ParseResult result = parse_target_with_star_atom(
+                                parser, add_to_symbol_table);
+
+                        if (result.error.type != ParseErrorType::NONE) 
+                                return result;
+
+                        AstNode *head = result.node;
+                        AstNode **child = &head->adjacent_child;
+
+                        if (parser->token_arr->current.type != TokenType::COMMA)
+                                return ParseResult{.node = head};
+
+
+                        AstNode *tuple = node_alloc(parser->ast_arena);
+                        tuple->type = AstNodeType::TUPLE;
+
+                        while (parser->token_arr->current.type ==
+                               TokenType::COMMA) {
+                                parser->token_arr->next_token();
+
+                                if (parser->token_arr->current.type ==
+                                    TokenType::CLOSED_PAREN)
+                                        break;
+
+                                result = parse_single_star_target(
+                                        parser, add_to_symbol_table);
+
+                                if (result.error.type != ParseErrorType::NONE)
+                                        return result;
+
+                                *child = result.node;
+                                child = &((*child)->adjacent_child);
+                        }
+
+                        ParseResult assert_result =
+                                assert_token_and_print_debug(
+                                        parser,
+                                        TokenType::CLOSED_PAREN,
+                                        "Mismatched Parenthesis");
+
+                        if (assert_result.error.type != ParseErrorType::NONE)
+                                return assert_result;
+                        parser->token_arr->next_token();
+                        return ParseResult{.node = tuple};
+                }
+
+        } else if (parser->token_arr->current.type == TokenType::SQUARE_OPEN_PAREN) {
+                AstNode *list = node_alloc(parser->ast_arena);
+                list->type = AstNodeType::LIST;
+                list->token = parser->token_arr->current;
+
+                parser->token_arr->next_token();
+
+                ParseResult result = parse_single_star_target(
+                        parser, add_to_symbol_table);
+
+                if (result.error.type != ParseErrorType::NONE)
+                        return result;
+
+                AstNode *head = result.node;
+                AstNode **child = &head->adjacent_child;
+
+                list->list.children = head;
+
+                while (parser->token_arr->current.type == TokenType::COMMA) {
+                        parser->token_arr->next_token();
+
+                        if (parser->token_arr->current.type ==
+                            TokenType::SQUARE_CLOSED_PAREN)
+                                break;
+
+                        result = parse_single_star_target(
+                                parser, add_to_symbol_table);
+
+                        if (result.error.type != ParseErrorType::NONE)
+                                return result;
+
+                        *child = result.node;
+                        child = &((*child)->adjacent_child);
+                }
+
+                ParseResult assert_result = assert_token_and_print_debug(
+                        parser, TokenType::SQUARE_CLOSED_PAREN,
+                        "Mismatched Parenthesis");
+
+                if (assert_result.error.type != ParseErrorType::NONE)
+                        return assert_result;
+
+                parser->token_arr->next_token();
+                return ParseResult{.node = list};
+        } else {
+                ParseResult result = parse_primary(parser);
+
+                if (result.error.type != ParseErrorType::NONE)
+                        return result;
+
+                AstNode *star_atom = result.node;
+                // only accept the attribute references subscripts or identifiers
+                bool should_accept = false;
+                should_accept = should_accept ||
+                                star_atom->type == AstNodeType::ATTRIBUTE_REF;
+                should_accept = should_accept ||
+                                star_atom->type == AstNodeType::SUBSCRIPT;
+                should_accept = should_accept ||
+                                star_atom->type == AstNodeType::IDENTIFIER;
+                if (!should_accept) {
+                        return parser_create_error_from_msg(
+                                parser, "Cannot assign here");
+                }
+
+                return ParseResult{.node = star_atom};
+        }
 }
 
-static AstNode *parse_star_targets(Tokeniser *tokeniser, Arena *ast_arena,
-                                   SymbolTableEntry *scope,
-                                   CompilerTables *compiler_tables,
-                                   Arena *symbol_table_arena)
+static ParseResult parse_single_star_target(Parser *parser,
+                                            bool add_to_symbol_table)
+{
+        // TODO: Test  left reccursion on star_targets
+        if (parser->token_arr->current.type == TokenType::MULTIPLICATION) {
+                AstNode *starred_target = node_alloc(parser->ast_arena);
+                starred_target->type = AstNodeType::STARRED;
+                starred_target->token = parser->token_arr->current;
+                parser->token_arr->next_token();
+
+                ParseResult result = parse_target_with_star_atom(parser, add_to_symbol_table);
+
+                if (result.error.type != ParseErrorType::NONE)
+                        return result;
+
+                starred_target->star_expression.expression = result.node;
+                return ParseResult{ .node = starred_target };
+
+        } else if (parser->token_arr->current.type == TokenType::EXPONENTIATION) {
+                return parser_create_error_from_msg(
+                        parser, "Star targets cannot be double starred");
+        }
+
+        return parse_target_with_star_atom(parser, add_to_symbol_table);
+}
+
+static ParseResult parse_star_targets(Parser *parser)
 {
         //TODO implement parsing star_atom
-        return parse_comma_seperated_in_tuple_func(tokeniser, ast_arena, scope,
-                                                   compiler_tables,
-                                                   symbol_table_arena,
-                                                   parse_single_star_target);
+        ParseResult result = parse_single_star_target(parser);
+
+        if (result.error.type != ParseErrorType::NONE)
+                return result;
+
+        AstNode *head = result.node;
+
+        AstNode **child = &head->adjacent_child;
+        while (parser->token_arr->current.type == TokenType::COMMA) {
+                result = parse_single_star_target(parser);
+
+                if (result.error.type != ParseErrorType::NONE)
+                        return result;
+
+                *child = result.node;
+
+                child = &((*child)->adjacent_child);
+        }
+
+        return ParseResult{.node = head};
 }
 
-static AstNode *parse_function_call_arguments(Tokeniser *tokeniser,
-                                              Arena *ast_arena,
-                                              SymbolTableEntry *scope,
-                                              CompilerTables *compiler_tables,
-                                              Arena *symbol_table_arena)
+static ParseResult parse_function_call_arguments(Parser *parser)
 {
         AstNode *args_head = nullptr;
         AstNode **arg = &args_head;
-        while (tokeniser->last_returned.type != TokenType::CLOSED_PAREN) {
-                if (tokeniser->last_returned.type == TokenType::NEWLINE) {
+        while (parser->token_arr->current.type != TokenType::CLOSED_PAREN) {
+                if (parser->token_arr->current.type == TokenType::NEWLINE) {
                         printf("Expected Token ')' before newline\n");
                         exit(1);
                 }
 
-                if (tokeniser->lookahead.type == TokenType::ASSIGN) {
+                if (parser->token_arr->lookahead.type == TokenType::ASSIGN) {
                         // check to see if the token before '=' is an identifier
-                        assert_token_and_print_debug(
-                                TokenType::IDENTIFIER, tokeniser->last_returned,
+                        ParseResult assert_result = assert_token_and_print_debug(
+                                parser, TokenType::IDENTIFIER,
                                 "Keyword arguments must be valid identifiers\n");
 
-                        AstNode *kwarg = node_alloc(ast_arena);
-                        kwarg->token = tokeniser->last_returned;
-                        kwarg->kwarg.name = parse_name(tokeniser, ast_arena);
-                        tokeniser->next_token();
-                        kwarg->kwarg.expression = parse_expression(
-                                tokeniser, ast_arena, scope, compiler_tables,
-                                symbol_table_arena, 0);
+                        if (assert_result.error.type != ParseErrorType::NONE)
+                                return assert_result;
+
+                        AstNode *kwarg = node_alloc(parser->ast_arena);
+                        kwarg->token = parser->token_arr->current;
+                        // FIXME add to symbol table
+                        ParseResult result = parse_name(parser, true);
+
+                        if (result.error.type != ParseErrorType::NONE)
+                                return result;
+
+                        kwarg->kwarg.name = result.node;
+                        parser->token_arr->next_token();
+
+                        result = parse_expression(parser, 0);
+
+                        if (result.error.type != ParseErrorType::NONE)
+                                return result;
+
+                        kwarg->kwarg.expression = result.node;
 
                         if (!(kwarg->kwarg.expression)) {
-                                printf("Failed to parse ufunction argument on line: %d col: %d\n",
-                                       tokeniser->last_returned.line,
-                                       tokeniser->last_returned.column);
+                                printf("Failed to parse function argument on line: %d col: %d\n",
+                                       parser->token_arr->current.line,
+                                       parser->token_arr->current.column);
                                 break;
                         }
 
@@ -356,313 +611,393 @@ static AstNode *parse_function_call_arguments(Tokeniser *tokeniser,
                 }
 
                 else {
-                        *arg = parse_single_assignment_star_expression(
-                                tokeniser, ast_arena, scope, compiler_tables,
-                                symbol_table_arena);
+                        ParseResult result = 
+                                parse_single_assignment_star_expression(parser);
 
-                        AstNode *maybe_gen = parse_gen_expr_from_first_child(
-                                tokeniser, ast_arena, scope, compiler_tables,
-                                symbol_table_arena, *arg);
+                        if (result.error.type != ParseErrorType::NONE)
+                                return result;
+
+                        *arg = result.node;
+
+                        result = parse_gen_expr_from_first_child(parser, *arg);
+
+                        if (result.error.type != ParseErrorType::NONE)
+                                return result;
+
+                        AstNode *maybe_gen = result.node;
 
                         if (maybe_gen != *arg) {
                                 *arg = maybe_gen;
-                                assert_token_and_print_debug(
+                                ParseResult assert_result = assert_token_and_print_debug(
+                                        parser,
                                         TokenType::CLOSED_PAREN,
-                                        tokeniser->last_returned,
                                         "Gen expression without parenthises is only valid for functions with 1 arguemnt");
+
+                                if (assert_result.error.type != ParseErrorType::NONE)
+                                        return assert_result;
                                 break;
                         }
 
                         if (!(*arg)) {
                                 printf("Failed to parse function argument on line: %d col: %d\n",
-                                       tokeniser->last_returned.line,
-                                       tokeniser->last_returned.column);
+                                       parser->token_arr->current.line,
+                                       parser->token_arr->current.column);
 
                                 break;
                         }
                 }
 
                 // dont check for comma if the adjacent_child token is a closing parenthesis
-                if (tokeniser->last_returned.type == TokenType::CLOSED_PAREN) {
+                if (parser->token_arr->current.type == TokenType::CLOSED_PAREN) {
                         break;
                 }
 
-                assert_comma_and_skip_over(tokeniser);
+                assert_comma_and_skip_over(parser);
                 arg = &((*arg)->adjacent_child);
         }
 
-        tokeniser->next_token();
-        return args_head;
+        parser->token_arr->next_token();
+        return ParseResult{.node = args_head};
 }
 
 // NOTE: Python distinguishes between regular primary and those that end
 // in just a list slice a and attribute access
 // See 'single_subscript_attribute_target'
-static AstNode *parse_single_subscript_attribute_primary(
-        Tokeniser *tokeniser, Arena *ast_arena, SymbolTableEntry *scope,
-        CompilerTables *compiler_tables, Arena *symbol_table_arena)
+static ParseResult parse_single_subscript_attribute_primary(
+        Parser *parser, bool add_to_symbol_table)
 {
         AstNode *prev = nullptr;
         AstNode node = {};
-        node.token = tokeniser->last_returned;
+        node.token = parser->token_arr->current;
 
-        AstNode *left = parse_atom(tokeniser, ast_arena, scope, compiler_tables,
-                                   symbol_table_arena);
+        ParseResult result = parse_atom(parser, add_to_symbol_table);
 
-        Token prev_tok = tokeniser->last_returned;
+        if (result.error.type != ParseErrorType::NONE)
+                return result;
+
+        AstNode *left = result.node;
+
+        Token prev_tok = parser->token_arr->current;
         while (left != prev) {
                 prev = left;
-                left = parse_sub_primary(tokeniser, ast_arena, left, scope,
-                                         compiler_tables, symbol_table_arena);
+                result = parse_sub_primary(parser, left, add_to_symbol_table);
+
+                if (result.error.type != ParseErrorType::NONE)
+                        return result;
+
+                left = result.node;
         }
 
-        if (left->type == AstNodeType::FUNCTION_CALL) {
-                parser_exit_with_error_msg(
-                        "Expected either attribute target or subscript",
-                        tokeniser);
+        if (left->type != AstNodeType::SUBSCRIPT && left->type == AstNodeType::ATTRIBUTE_REF) {
+                return parser_create_error_from_msg(
+                        parser,
+                        "Expected either attribute target or subscript");
         }
 
-        return left;
+        return ParseResult{.node = left};
 }
 
-static AstNode *parse_targets(Tokeniser *tokeniser, Arena *ast_arena,
-                              SymbolTableEntry *scope,
-                              CompilerTables *compiler_tables,
-                              Arena *symbol_table_arena)
+static ParseResult parse_targets(Parser *parser)
 {
-        return parse_comma_seperated_in_tuple_func(tokeniser, ast_arena, scope,
-                                                   compiler_tables,
-                                                   symbol_table_arena,
-                                                   parse_single_target);
+        return parse_comma_seperated_in_tuple_func(parser, parse_single_target);
 }
 
-static AstNode *parse_single_del_target(Tokeniser *tokeniser, Arena *ast_arena,
-                                        SymbolTableEntry *scope,
-                                        CompilerTables *compiler_tables,
-                                        Arena *symbol_table_arena)
+static ParseResult parse_single_del_target(Parser *parser)
 {
-        return parse_single_subscript_attribute_primary(tokeniser, ast_arena,
-                                                        scope, compiler_tables,
-                                                        symbol_table_arena);
+        return parse_single_subscript_attribute_primary(parser);
 }
 
-static AstNode *parse_del_targets(Tokeniser *tokeniser, Arena *ast_arena,
-                                  SymbolTableEntry *scope,
-                                  CompilerTables *compiler_tables,
-                                  Arena *symbol_table_arena)
+static ParseResult parse_del_targets(Parser *parser)
 {
-        return parse_comma_seperated_in_tuple_func(tokeniser, ast_arena, scope,
-                                                   compiler_tables,
-                                                   symbol_table_arena,
-                                                   parse_single_del_target);
+        return parse_comma_seperated_in_tuple_func(parser, parse_single_del_target);
 }
 
-static AstNode *parse_primary(Tokeniser *tokeniser, Arena *ast_arena,
-                              SymbolTableEntry *scope,
-                              CompilerTables *compiler_tables,
-                              Arena *symbol_table_arena)
+static ParseResult parse_slice(Parser *parser)
+{
+        AstNode *slice = node_alloc(parser->ast_arena);
+        slice->type = AstNodeType::SLICE;
+        slice->token = parser->token_arr->current;
+
+        AstNode *maybe_assignment_expr = nullptr;
+        if (parser->token_arr->current.type != TokenType::COLON) {
+                ParseResult result = 
+                        parse_single_assignment_expression(parser);
+
+                if (result.error.type != ParseErrorType::NONE)
+                        return result;
+
+                maybe_assignment_expr = result.node;
+
+                if (maybe_assignment_expr->type == AstNodeType::ASSIGNMENT ||
+                    parser->token_arr->current.type != TokenType::COLON) {
+                        slice->slice.named_expr = maybe_assignment_expr;
+                        return ParseResult{.node = slice};
+                }
+        }
+
+        slice->slice.start = maybe_assignment_expr;
+        AstNode **child = &slice->slice.end;
+        int i = 0;
+        while (parser->token_arr->current.type == TokenType::COLON || i == 2) {
+                parser->token_arr->next_token();
+                if (parser->token_arr->current.type == TokenType::NEWLINE) {
+                        printf("Expected Token ']' before newline\n");
+                        exit(1);
+                }
+
+                ParseResult result = parse_expression(parser, 0);
+
+                if (result.error.type != ParseErrorType::NONE)
+                        return result;
+
+                *child = result.node;
+                child = ++child;
+                ++i;
+        }
+
+        if (parser->token_arr->current.type == TokenType::COLON) {
+                return parser_create_error_from_msg(
+                        parser,
+                        "Unexpected ':' at the end of slice expression");
+        }
+
+        return ParseResult{ .node = slice };
+}
+
+static ParseResult parse_primary(Parser *parser)
 {
         AstNode *prev = nullptr;
-        AstNode *left = parse_atom(tokeniser, ast_arena, scope, compiler_tables,
-                                   symbol_table_arena);
+        ParseResult result = parse_atom(parser, false);
+
+        if (result.error.type != ParseErrorType::NONE)
+                return result;
+
+        AstNode *left = result.node;
 
         // parse star primary
         // NOTE: What the fuck does this even mean
 
         while (left != prev) {
                 prev = left;
-                left = parse_sub_primary(tokeniser, ast_arena, left, scope,
-                                         compiler_tables, symbol_table_arena);
+                result = parse_sub_primary(parser, left, false);
+
+                if (result.error.type != ParseErrorType::NONE)
+                        return result;
+
+                left = result.node;
         }
 
-        return left;
+        return ParseResult{.node = left};
 }
 
-static AstNode *parse_sub_primary(Tokeniser *tokeniser, Arena *ast_arena,
-                                  AstNode *left, SymbolTableEntry *scope,
-                                  CompilerTables *compiler_tables,
-                                  Arena *symbol_table_arena)
+static ParseResult parse_sub_primary(Parser *parser, AstNode *left, bool add_to_symbol_table)
 {
-        Token current_token = tokeniser->last_returned;
+        Token current_token = parser->token_arr->current;
 
         if (current_token.type == TokenType::DOT) {
-                AstNode *attribute_ref = node_alloc(ast_arena);
+                AstNode *attribute_ref = node_alloc(parser->ast_arena);
                 attribute_ref->type = AstNodeType::ATTRIBUTE_REF;
-                attribute_ref->token = tokeniser->last_returned;
-                tokeniser->next_token();
-                attribute_ref->attribute_ref.attribute =
-                        parse_name(tokeniser, ast_arena);
+                attribute_ref->token = parser->token_arr->current;
+                parser->token_arr->next_token();
+                ParseResult result =
+                        parse_name(parser, false);
+
+                if (result.error.type != ParseErrorType::NONE)
+                        return result;
+
+                attribute_ref->attribute_ref.attribute = result.node;
                 attribute_ref->attribute_ref.name = left;
 
-                return attribute_ref;
+                return ParseResult{.node = attribute_ref};
         } else if (current_token.type == TokenType::OPEN_PAREN) {
-                tokeniser->next_token();
+                parser->token_arr->next_token();
 
-                AstNode *call = node_alloc(ast_arena);
+                AstNode *call = node_alloc(parser->ast_arena);
                 call->type = AstNodeType::FUNCTION_CALL;
                 call->token = current_token;
 
-                call->function_call.args = parse_function_call_arguments(
-                        tokeniser, ast_arena, scope, compiler_tables,
-                        symbol_table_arena);
+                ParseResult result = parse_function_call_arguments(parser);
+
+                if (result.error.type != ParseErrorType::NONE)
+                        return result;
+
+                call->function_call.args = result.node;
                 call->function_call.expression = left;
 
-                return parse_sub_primary(tokeniser, ast_arena, call, scope,
-                                         compiler_tables, symbol_table_arena);
-        } else if (current_token.type == TokenType::SQUARE_OPEN_PAREN) {
-                tokeniser->next_token();
+                return parse_sub_primary(parser, call, false);
 
-                AstNode *subscript = node_alloc(ast_arena);
+        } else if (current_token.type == TokenType::SQUARE_OPEN_PAREN) {
+                parser->token_arr->next_token();
+
+                AstNode *subscript = node_alloc(parser->ast_arena);
                 subscript->token = current_token,
                 subscript->type = AstNodeType::SUBSCRIPT;
 
                 AstNodeSubscript *subscript_proper = &subscript->subscript;
-
-                AstNode **child = &subscript_proper->start;
-                while (tokeniser->last_returned.type !=
-                       TokenType::SQUARE_CLOSED_PAREN) {
-                        if (tokeniser->last_returned.type ==
-                            TokenType::NEWLINE) {
-                                printf("Expected Token ']' before newline\n");
-                                exit(1);
-                        }
-
-                        *child = parse_expression(tokeniser, ast_arena, scope,
-                                                  compiler_tables,
-                                                  symbol_table_arena, 0);
-
-                        if (tokeniser->last_returned.type ==
-                            TokenType::SQUARE_CLOSED_PAREN) {
-                                break;
-                        }
-
-                        assert_token_and_print_debug(
-                                TokenType::COLON, tokeniser->last_returned,
-                                "Subscript expressions must be seperated by a colon");
-
-                        tokeniser->next_token();
-                        child = ++child;
-                }
-
-                tokeniser->next_token();
                 subscript_proper->expression = left;
-                return parse_sub_primary(tokeniser, ast_arena, subscript, scope,
-                                         compiler_tables, symbol_table_arena);
+                ParseResult result = parse_comma_seperated_in_tuple_func(parser, parse_slice);
+
+                if (result.error.type != ParseErrorType::NONE)
+                        return result;
+
+                subscript_proper->slices = result.node;
+
+                ParseResult assert_result = assert_token_and_print_debug(
+                        parser,
+                        TokenType::SQUARE_CLOSED_PAREN,
+                        "Error parsing subscript");
+
+                if (assert_result.error.type != ParseErrorType::NONE)
+                        return assert_result;
+                parser->token_arr->next_token();
+
+                return parse_sub_primary(parser, subscript, add_to_symbol_table);
         } else {
-                return left;
+                return ParseResult{.node = left};
         }
 }
 
-static AstNode *parse_else(Tokeniser *tokeniser, Arena *ast_arena,
-                           SymbolTableEntry *scope,
-                           CompilerTables *compiler_tables,
-                           Arena *symbol_table_arena)
+static ParseResult parse_else(Parser *parser)
 {
-        Token current_token = tokeniser->last_returned;
-        switch (current_token.type) {
-        case TokenType::ELSE: {
-                AstNode *else_node = node_alloc(ast_arena);
-                else_node->token = current_token;
-                else_node->type = AstNodeType::ELSE;
-                AstNodeElse *else_node_proper = &else_node->else_stmt;
-                assert_token_and_print_debug(TokenType::COLON,
-                                             tokeniser->next_token(),
-                                             "\n Error Parsing else satement");
+        Token current_token = parser->token_arr->current;
 
-                tokeniser->next_token(); // skip the colon
-
-                else_node_proper->block = parse_block(tokeniser, ast_arena,
-                                                      scope, compiler_tables,
-                                                      symbol_table_arena);
-                return else_node;
+        if (current_token.type != TokenType::ELSE) {
+                return ParseResult{.node = nullptr};
         }
 
-        default:
-                return nullptr;
-        }
+        AstNode *else_node = node_alloc(parser->ast_arena);
+        else_node->token = current_token;
+        else_node->type = AstNodeType::ELSE;
+        AstNodeElse *else_node_proper = &else_node->else_stmt;
+        parser->token_arr->next_token();
+        ParseResult assert_result = assert_token_and_print_debug(
+                parser, TokenType::COLON,
+                "\n Error Parsing else satement");
+
+        if (assert_result.error.type != ParseErrorType::NONE)
+                return assert_result;
+
+        parser->token_arr->next_token(); // skip the colon
+
+        ParseResult result = parse_block(parser);
+
+        if (result.error.type != ParseErrorType::NONE)
+                return result;
+
+        else_node_proper->block = result.node;
+        return ParseResult{.node = else_node};
 }
 
-static AstNode *parse_elif(Tokeniser *tokeniser, Arena *ast_arena,
-                           SymbolTableEntry *scope,
-                           CompilerTables *compiler_tables,
-                           Arena *symbol_table_arena)
+static ParseResult parse_elif(Parser *parser)
 {
-        Token current_token = tokeniser->last_returned;
-        switch (current_token.type) {
-        case TokenType::ELIF: {
-                tokeniser->next_token();
-                AstNode *elif = node_alloc(ast_arena);
-                elif->token = current_token;
-                AstNodeIf *elif_proper = &elif->if_stmt;
+        Token current_token = parser->token_arr->current;
 
-                elif_proper->condition = parse_expression(
-                        tokeniser, ast_arena, scope, compiler_tables,
-                        symbol_table_arena, 0);
-
-                assert_token_and_print_debug(TokenType::COLON,
-                                             tokeniser->last_returned,
-                                             "\n Error Parsing elif satement");
-
-                tokeniser->next_token(); // skip the colon
-
-                elif_proper->block = parse_block(tokeniser, ast_arena, scope,
-                                                 compiler_tables,
-                                                 symbol_table_arena);
-                elif_proper->or_else = parse_elif(tokeniser, ast_arena, scope,
-                                                  compiler_tables,
-                                                  symbol_table_arena);
-                return elif;
+        if (current_token.type != TokenType::ELIF) {
+                return parse_else(parser);
         }
 
-        default:
-                return parse_else(tokeniser, ast_arena, scope, compiler_tables,
-                                  symbol_table_arena);
+        parser->token_arr->next_token();
+        AstNode *elif = node_alloc(parser->ast_arena);
+        elif->token = current_token;
+        AstNodeIf *elif_proper = &elif->if_stmt;
+
+        ParseResult result = parse_expression(parser, 0);
+
+        if (result.error.type != ParseErrorType::NONE)
+                return result;
+
+        elif_proper->condition = result.node;
+        ParseResult assert_result = assert_token_and_print_debug(
+                 parser, TokenType::COLON,
+                "\n Error Parsing elif satement");
+
+        if (assert_result.error.type != ParseErrorType::NONE)
+                return assert_result;
+        parser->token_arr->next_token(); // skip the colon
+        result = parse_block(parser);
+
+        if (result.error.type != ParseErrorType::NONE)
+                return result;
+
+        elif_proper->block = result.node;
+        result = parse_elif(parser);
+
+        if (result.error.type != ParseErrorType::NONE)
+                return result;
+
+        elif_proper->or_else = result.node;
+
+        return ParseResult{.node = elif};
+}
+
+static ParseResult assert_comma_and_skip_over(Parser *parser)
+{
+        ParseResult assert_result = assert_token_and_print_debug(
+                parser, TokenType::COMMA,
+                "parameters must be seperated by commas");
+
+        if (assert_result.error.type != ParseErrorType::NONE)
+                return assert_result;
+
+        parser->token_arr->next_token();
+        return ParseResult{};
+}
+
+static ParseResult 
+parse_function_default_assign(Parser *parser, AstNode *left)
+{
+        if (parser->token_arr->current.type != TokenType::ASSIGN) {
+                return ParseResult{.node = left};
         }
+
+        AstNode *node = node_alloc(parser->ast_arena);
+        node->type = AstNodeType::ASSIGNMENT;
+        AstNodeAssignment *assignment = &node->assignment;
+        assignment->left = left;
+
+        if (!parser->tables->symbol_table->lookup(parser->token_arr->current.value,
+                                          parser->scope)) {
+                SymbolTableValue value = {};
+                value.node = node;
+                value.static_type.type = TypeInfoType::ANY;
+                parser->tables->symbol_table->insert(parser->symbol_table_arena,
+                                                     left->token.value, parser->scope, &value);
+        }
+
+        ParseResult assert_result = assert_token_and_print_debug(
+                parser, TokenType::ASSIGN,
+                "\nError in parsing assignment on line: ");
+
+        if (assert_result.error.type != ParseErrorType::NONE)
+                return assert_result;
+        parser->token_arr->next_token();
+
+        ParseResult result = parse_expression(parser, 0);
+
+        if (result.error.type != ParseErrorType::NONE)
+                return result;
+
+        assignment->expression = result.node;
+
+        return ParseResult{.node = node};
 }
 
-static inline void assert_comma_and_skip_over(Tokeniser *tokeniser)
+static ParseResult parse_function_default_assignment_or_annotation(Parser *parser, AstNode *left)
 {
-        assert_token_and_print_debug(TokenType::COMMA, tokeniser->last_returned,
-                                     "parameters must be seperated by commas");
+        ParseResult result = parse_function_default_assign(parser, left);
 
-        tokeniser->next_token();
-        eat_newlines(tokeniser);
-}
-static AstNode *
-parse_function_default_assignment(Tokeniser *tokeniser, Arena *ast_arena,
-                                  SymbolTableEntry *scope,
-                                  CompilerTables *compiler_tables,
-                                  Arena *symbol_table_arena, AstNode *left)
-{
-        AstNode *node = node_alloc(ast_arena);
-        node->token = tokeniser->last_returned;
+        if (result.error.type != ParseErrorType::NONE)
+                return result;
 
-        if (tokeniser->last_returned.type == TokenType::ASSIGN) {
-                node->type = AstNodeType::ASSIGNMENT;
-                AstNodeAssignment *assignment = &node->assignment;
-                assignment->name = left;
+        AstNode *maybe_assign = result.node;
 
-                if (!compiler_tables->variable_table->lookup(
-                            tokeniser->last_returned.value, scope)) {
-                        SymbolTableValue value = {};
-                        value.node = node;
-                        value.static_type.type = TypeInfoType::ANY;
-                        compiler_tables->variable_table->insert(
-                                symbol_table_arena, left->token.value, scope,
-                                &value);
-                }
+        if (maybe_assign != left) {
+                return ParseResult{.node = maybe_assign};
+        }
 
-                assert_token_and_print_debug(
-                        TokenType::ASSIGN, tokeniser->last_returned,
-                        "\nError in parsing assignment on line: ");
-                tokeniser->next_token();
-
-                assignment->expression = parse_expression(
-                        tokeniser, ast_arena, scope, compiler_tables,
-                        symbol_table_arena, 0);
-
-                return node;
-        } else if (tokeniser->last_returned.type == TokenType::COLON) {
+        if (parser->token_arr->current.type == TokenType::COLON) {
+                AstNode *node = node_alloc(parser->ast_arena);
+                node->token = parser->token_arr->current;
                 node->type = AstNodeType::DECLARATION;
                 AstNodeDeclaration *declaration = &node->declaration;
                 declaration->name = left;
@@ -670,23 +1005,38 @@ parse_function_default_assignment(Tokeniser *tokeniser, Arena *ast_arena,
                 SymbolTableValue value = {};
                 value.node = node;
                 assert_no_redefinition_and_insert_to_symbol_table(
-                        symbol_table_arena, compiler_tables->variable_table,
-                        scope, &declaration->name->token, &value);
+                        parser->symbol_table_arena, parser->tables->symbol_table, parser->scope,
+                        &declaration->name->token, &value, false);
 
-                tokeniser->next_token();
-                declaration->annotation =
-                        parse_type_annotation(tokeniser, ast_arena);
+                parser->token_arr->next_token();
+                result =
+                        parse_type_annotation(parser);
 
-                if (tokeniser->last_returned.type == TokenType::ASSIGN) {
-                        tokeniser->next_token();
-                        declaration->expression = parse_expression(
-                                tokeniser, ast_arena, scope, compiler_tables,
-                                symbol_table_arena, 0);
+                if (result.error.type != ParseErrorType::NONE)
+                        return result;
+
+                declaration->annotation = result.node;
+
+                if (parser->token_arr->current.type == TokenType::ASSIGN) {
+                        parser->token_arr->next_token();
+                        result =
+                                parse_expression(parser, 0);
+
+                        if (result.error.type != ParseErrorType::NONE)
+                                return result;
+
+                        declaration->expression = result.node;
                 }
+                return ParseResult{.node = node};
 
-                return node;
         } else {
-                return left;
+                SymbolTableValue value = {};
+                value.node = left;
+                value.static_type.type = TypeInfoType::ANY;
+                assert_no_redefinition_and_insert_to_symbol_table(
+                        parser->symbol_table_arena, parser->tables->symbol_table, parser->scope,
+                        &left->token, &value, false);
+                return ParseResult{.node = left};
         }
 }
 
@@ -702,79 +1052,104 @@ static bool is_default_arg(AstNode *arg)
         return false;
 }
 
-static AstNode *parse_function_def_arguments(Tokeniser *tokeniser,
-                                             Arena *ast_arena,
-                                             AstNodeFunctionDef *function,
-                                             SymbolTableEntry *scope,
-                                             CompilerTables *compiler_tables,
-                                             Arena *symbol_table_arena)
+static ParseResult parse_function_def_arguments(Parser *parser, AstNodeFunctionDef *function)
 {
         AstNode *arg_head = nullptr;
         AstNode **arg = &arg_head;
+        int arg_position = 0;
         bool defaults_only = false;
 
-        while (tokeniser->last_returned.type != TokenType::CLOSED_PAREN) {
-                eat_newlines(tokeniser);
-                Token current_token = tokeniser->last_returned;
+        while (parser->token_arr->current.type != TokenType::CLOSED_PAREN) {
+                Token current_token = parser->token_arr->current;
                 AstNode argument_node = {};
                 argument_node.token = current_token;
 
-                // *args
-                if (current_token.type == TokenType::MULTIPLICATION) {
-                        tokeniser->next_token();
+                if (current_token.type == TokenType::DIVISION) {
+                        parser->token_arr->next_token();
+                        function->slash_pos = arg_position++;
+
+                        if (parser->token_arr->current.type ==
+                            TokenType::CLOSED_PAREN)
+                                break;
+
+                        assert_comma_and_skip_over(parser);
+                        continue;
+                } else if (current_token.type == TokenType::MULTIPLICATION) {
+                        parser->token_arr->next_token();
                         if (function->star) {
-                                parser_exit_with_error_msg(
-                                        "Function can only contain one * argument",
-                                        tokeniser);
+                                return parser_create_error_from_msg(
+                                        parser,
+                                        "Function can only contain one * argument");
                         }
 
-                        function->has_star = true;
-                        if (tokeniser->last_returned.type ==
-                            TokenType::CLOSED_PAREN) {
+                        function->star_pos = arg_position++;
+                        if (parser->token_arr->current.type ==
+                            TokenType::CLOSED_PAREN)
                                 break;
-                        }
-                        if (tokeniser->last_returned.type != TokenType::COMMA) {
-                                function->star =
-                                        parse_name(tokeniser, ast_arena);
+                        if (parser->token_arr->current.type != TokenType::COMMA) {
+                                ParseResult result =
+                                        parse_name(parser);
+
+                                if (result.error.type != ParseErrorType::NONE)
+                                        return result;
+
+                                function->star = result.node;
                         }
 
-                        if (tokeniser->last_returned.type ==
-                            TokenType::CLOSED_PAREN) {
+                        if (parser->token_arr->current.type ==
+                            TokenType::CLOSED_PAREN)
                                 break;
+
+                        assert_comma_and_skip_over(parser);
+                        continue;
+                } else if (parser->token_arr->current.type ==
+                           TokenType::EXPONENTIATION) {
+                        parser->token_arr->next_token();
+
+                        ParseResult result = parse_name(parser);
+                        if (result.error.type != ParseErrorType::NONE) {
+                                return result;
                         }
 
-                        assert_comma_and_skip_over(tokeniser);
-                }
+                        AstNode *name = result.node;
+                        result = parse_assignment_or_declaration(parser, name);
 
-                // **kwargs
-                if (tokeniser->last_returned.type ==
-                    TokenType::EXPONENTIATION) {
-                        tokeniser->next_token();
+                        if (result.error.type != ParseErrorType::NONE) {
+                                return result;
+                        }
 
-                        function->double_star = parse_assignment_or_declaration(
-                                tokeniser, ast_arena, scope, compiler_tables,
-                                symbol_table_arena,
-                                parse_name(tokeniser, ast_arena));
+                        function->double_star = result.node;
 
-                        assert_token_and_print_debug(
-                                TokenType::CLOSED_PAREN,
-                                tokeniser->last_returned,
+                        ParseResult assert_result = assert_token_and_print_debug(
+                                parser, TokenType::CLOSED_PAREN,
+
                                 "** arguments cannot be followed by any additional arguments");
+
+                        if (assert_result.error.type != ParseErrorType::NONE)
+                                return assert_result;
                         break;
                 }
 
-                AstNode *left = parse_name(tokeniser, ast_arena);
+                ParseResult result = parse_name(parser);
+
+                if (result.error.type != ParseErrorType::NONE)
+                        return result;
+
+                AstNode *left = result.node;
 
                 // parse_optional default assignment
-                *arg = parse_function_default_assignment(tokeniser, ast_arena,
-                                                         scope, compiler_tables,
-                                                         symbol_table_arena,
-                                                         left);
+                result = parse_function_default_assignment_or_annotation(
+                        parser, left);
+
+                if (result.error.type != ParseErrorType::NONE)
+                        return result;
+
+                *arg = result.node;
 
                 if (!is_default_arg(*arg) && defaults_only) {
-                        parser_exit_with_error_msg(
-                                "Non default arguments cannot follow default arguments",
-                                tokeniser);
+                        return parser_create_error_from_msg(
+                                parser,
+                                "Non default arguments cannot follow default arguments");
                 }
 
                 if (is_default_arg(*arg))
@@ -782,606 +1157,805 @@ static AstNode *parse_function_def_arguments(Tokeniser *tokeniser,
 
                 arg = &((*arg)->adjacent_child);
 
-                if (tokeniser->last_returned.type == TokenType::CLOSED_PAREN) {
+                if (parser->token_arr->current.type == TokenType::CLOSED_PAREN) {
                         break;
                 }
 
-                eat_newlines(tokeniser);
-                assert_comma_and_skip_over(tokeniser);
+                assert_comma_and_skip_over(parser);
+                ++arg_position;
         }
 
-        tokeniser->next_token();
-        return arg_head;
+        parser->token_arr->next_token();
+        return ParseResult{.node = arg_head};
 }
 
-static AstNode *parse_block(Tokeniser *tokeniser, Arena *ast_arena,
-                            SymbolTableEntry *scope,
-                            CompilerTables *compiler_tables,
-                            Arena *symbol_table_arena)
+static ParseResult parse_lambda_arguments(Parser *parser,
+                                          AstNodeLambdaDef *function)
 {
-        AstNode *block = node_alloc(ast_arena);
-        block->token = tokeniser->last_returned;
+        AstNode *arg_head = nullptr;
+        AstNode **arg = &arg_head;
+        bool defaults_only = false;
+
+        while (parser->token_arr->current.type != TokenType::COLON) {
+                Token current_token = parser->token_arr->current;
+                AstNode argument_node = {};
+                argument_node.token = current_token;
+
+                // *args
+                if (current_token.type == TokenType::MULTIPLICATION) {
+                        parser->token_arr->next_token();
+                        if (function->star) {
+                                return parser_create_error_from_msg(
+                                        parser,
+                                        "Function can only contain one * argument");
+                        }
+
+                        if (parser->token_arr->current.type == TokenType::COLON) {
+                                break;
+                        }
+                        if (parser->token_arr->current.type != TokenType::COMMA) {
+                                ParseResult result =
+                                        parse_name(parser);
+
+                                if (result.error.type != ParseErrorType::NONE)
+                                        return result;
+
+                                function->star = result.node;
+                        }
+
+                        if (parser->token_arr->current.type == TokenType::COLON) {
+                                break;
+                        }
+
+                        assert_comma_and_skip_over(parser);
+                }
+
+                // **kwargs
+                if (parser->token_arr->current.type ==
+                    TokenType::EXPONENTIATION) {
+                        parser->token_arr->next_token();
+                        ParseResult result = parse_name(parser);
+
+                        if (result.error.type != ParseErrorType::NONE)
+                                return result;
+
+                        AstNode *name = result.node;
+
+                        result = parse_function_default_assign(parser, name);
+
+                        if (result.error.type != ParseErrorType::NONE)
+                                return result;
+
+                        function->double_star = result.node;
+
+                        ParseResult assert_result = assert_token_and_print_debug(
+                                parser, TokenType::COLON,
+
+                                "** arguments cannot be followed by any additional arguments");
+
+                        if (assert_result.error.type != ParseErrorType::NONE)
+                                return assert_result;
+                        break;
+                }
+
+                ParseResult result = parse_name(parser);
+
+                if (result.error.type != ParseErrorType::NONE)
+                        return result;
+
+                AstNode *left = result.node;
+
+                // parse_optional default assignment
+                result = parse_function_default_assign(parser, left);
+
+                if (result.error.type != ParseErrorType::NONE)
+                        return result;
+
+                *arg = result.node;
+
+                if (!is_default_arg(*arg) && defaults_only) {
+                        return parser_create_error_from_msg(
+                                parser,
+                                "Non default arguments cannot follow default arguments");
+                }
+
+                if (is_default_arg(*arg))
+                        defaults_only = true;
+
+                arg = &((*arg)->adjacent_child);
+
+                if (parser->token_arr->current.type == TokenType::COLON) {
+                        break;
+                }
+
+                assert_comma_and_skip_over(parser);
+        }
+
+        parser->token_arr->next_token();
+        return ParseResult{.node = arg_head};
+}
+
+static ParseResult parse_block(Parser *parser)
+{
+        AstNode *block = node_alloc(parser->ast_arena);
+        block->token = parser->token_arr->current;
         block->type = AstNodeType::BLOCK;
         AstNode **child = &block->block.children;
 
-        assert_token_and_print_debug(TokenType::NEWLINE,
-                                     tokeniser->last_returned,
-                                     "Error in parsing block");
-        uint32_t old_indent = tokeniser->current_indent_level;
-        tokeniser->next_token();
-        if (tokeniser->current_indent_level != old_indent + 1) {
-                parser_exit_with_error_msg("Expected indent in block",
-                                           tokeniser);
+        ParseResult assert_result = assert_token_and_print_debug(
+                parser, TokenType::NEWLINE,
+                "Error in parsing block");
+
+        if (assert_result.error.type != ParseErrorType::NONE)
+                return assert_result;
+
+        uint32_t old_indent = parser->token_arr->current.indent_level;
+        parser->token_arr->next_token();
+        if (parser->token_arr->current.indent_level != old_indent + 1) {
+                return parser_create_error_from_msg(
+                        parser, "Expected indent in block");
         }
 
-        while (tokeniser->current_indent_level > old_indent) {
-                if (tokeniser->last_returned.type == TokenType::NEWLINE) {
-                        tokeniser->next_token();
+        while (parser->token_arr->current.indent_level > old_indent) {
+                if (parser->token_arr->current.type == TokenType::NEWLINE) {
+                        parser->token_arr->next_token();
                         continue;
                 }
 
-                AstNode *statement = parse_statement(tokeniser, ast_arena,
-                                                     scope, compiler_tables,
-                                                     symbol_table_arena);
+                ParseResult result = parse_statement(parser);
 
-                if (!statement) {
-                        printf("error parsing statment in block\n");
-                        //debug_print_parse_tree(&block, 0);
-                        return nullptr;
-                }
+                // must handle errors before assigning the statement to the result
+                // result may be null and handle errors re assigns it to a non null erroneous value
+                handle_errors_and_assert_end(parser, &result);
+                AstNode *statement = result.node;
 
                 *child = statement;
                 child = &(*child)->adjacent_child;
         }
 
-        return block;
+        return ParseResult{.node = block};
 }
 
 // TODO Figure out the reason for the Python grammars distinction between
 // assignment expressions and named expressions
-static AstNode *parse_single_assignment_expression(
-        Tokeniser *tokeniser, Arena *ast_arena, SymbolTableEntry *scope,
-        CompilerTables *compiler_tables, Arena *symbol_table_arena)
+static ParseResult parse_single_assignment_expression(Parser *parser)
 {
-        AstNode *node = node_alloc(ast_arena);
-        node->token = tokeniser->last_returned;
+        AstNode *node = node_alloc(parser->ast_arena);
+        node->token = parser->token_arr->current;
 
-        if (tokeniser->last_returned.type == TokenType::IDENTIFIER &&
-            tokeniser->lookahead.type == TokenType::COLON_EQUAL) {
+        if (parser->token_arr->current.type == TokenType::IDENTIFIER &&
+            parser->token_arr->lookahead.type == TokenType::COLON_EQUAL) {
                 node->type = AstNodeType::ASSIGNMENT;
                 AstNodeAssignment *assignment = &node->assignment;
                 // if not already declared then create with any type
                 // used for reading python library files
-                if (!compiler_tables->variable_table->lookup(
-                            tokeniser->last_returned.value, scope)) {
-                        SymbolTableValue value{};
+                if (!parser->tables->symbol_table->lookup(
+                            parser->token_arr->current.value, parser->scope)) {
+                        SymbolTableValue value = {};
                         value.node = node;
                         value.static_type.type = TypeInfoType::ANY;
-                        compiler_tables->variable_table->insert(
-                                symbol_table_arena,
-                                tokeniser->last_returned.value, scope, &value);
+                        parser->tables->symbol_table->insert(
+                                parser->symbol_table_arena,
+                                parser->token_arr->current.value, parser->scope, &value);
                 }
 
-                assignment->name = parse_name(tokeniser, ast_arena);
-                assert_token_and_print_debug(
-                        TokenType::ASSIGN, tokeniser->next_token(),
+                ParseResult result = parse_name(parser);
+
+                if (result.error.type != ParseErrorType::NONE)
+                        return result;
+
+                assignment->left = result.node;
+                parser->token_arr->next_token();
+                ParseResult assert_result = assert_token_and_print_debug(
+                        parser, TokenType::ASSIGN,
                         "\nError in parsing assignment on line: ");
-                tokeniser->next_token();
-                assignment->expression = parse_expression(
-                        tokeniser, ast_arena, scope, compiler_tables,
-                        symbol_table_arena, 0);
-                return node;
+
+                if (assert_result.error.type != ParseErrorType::NONE)
+                        return assert_result;
+                parser->token_arr->next_token();
+                result = parse_expression(parser, 0);
+
+                if (result.error.type != ParseErrorType::NONE)
+                        return result;
+
+                assignment->expression = result.node;
+                return ParseResult{.node = node};
         }
 
         else {
-                return parse_expression(tokeniser, ast_arena, scope,
-                                        compiler_tables, symbol_table_arena, 0);
+                return parse_expression(parser, 0);
         }
 }
 
-static AstNode *parse_single_assignment_star_expression(
-        Tokeniser *tokeniser, Arena *ast_arena, SymbolTableEntry *scope,
-        CompilerTables *compiler_tables, Arena *symbol_table_arena)
+static ParseResult 
+parse_single_assignment_star_expression(Parser *parser)
 {
         AstNode node = {};
-        node.token = tokeniser->last_returned;
+        node.token = parser->token_arr->current;
 
-        if (tokeniser->last_returned.type == TokenType::MULTIPLICATION) {
-                return parse_star_expression(tokeniser, ast_arena, scope,
-                                             compiler_tables,
-                                             symbol_table_arena);
+        if (parser->token_arr->current.type == TokenType::MULTIPLICATION) {
+                return parse_star_expression(parser);
         }
 
-        return parse_single_assignment_expression(tokeniser, ast_arena, scope,
-                                                  compiler_tables,
-                                                  symbol_table_arena);
+        return parse_single_assignment_expression(parser);
 }
 
-static AstNode *
-parse_assignment_star_expressions(Tokeniser *tokeniser, Arena *ast_arena,
-                                  SymbolTableEntry *scope,
-                                  CompilerTables *compiler_tables,
-                                  Arena *symbol_table_arena, bool wrap_in_tuple)
+static ParseResult 
+parse_assignment_star_expressions(Parser *parser, bool wrap_in_tuple)
 {
         if (wrap_in_tuple) {
                 return parse_comma_seperated_in_tuple_func(
-                        tokeniser, ast_arena, scope, compiler_tables,
-                        symbol_table_arena,
-                        parse_single_assignment_star_expression);
+                        parser, parse_single_assignment_star_expression);
         }
 
         return parse_comma_seperated_func(
-                tokeniser, ast_arena, scope, compiler_tables,
-                symbol_table_arena, parse_single_assignment_star_expression);
+                parser, parse_single_assignment_star_expression);
 }
 
-static AstNode *parse_single_double_starred_kvpair(
-        Tokeniser *tokeniser, Arena *ast_arena, SymbolTableEntry *scope,
-        CompilerTables *compiler_tables, Arena *symbol_table_arena)
+static ParseResult parse_single_double_starred_kvpair(Parser *parser)
 {
-        if (tokeniser->last_returned.type == TokenType::EXPONENTIATION) {
-                AstNode *double_starred = node_alloc(ast_arena);
+        if (parser->token_arr->current.type == TokenType::EXPONENTIATION) {
+                AstNode *double_starred = node_alloc(parser->ast_arena);
                 double_starred->type = AstNodeType::STARRED;
-                double_starred->token = tokeniser->last_returned;
+                double_starred->token = parser->token_arr->current;
                 AstNodeStarExpression *doule_starred_proper =
                         &double_starred->star_expression;
-                tokeniser->next_token();
-                doule_starred_proper->expression =
-                        parse_bitwise_or_minimum_precedence(
-                                tokeniser, ast_arena, scope, compiler_tables,
-                                symbol_table_arena, 0);
+                parser->token_arr->next_token();
+                ParseResult result =
+                        parse_bitwise_or_minimum_precedence(parser, 0);
 
-                return double_starred;
+                if (result.error.type != ParseErrorType::NONE)
+                        return result;
+
+                doule_starred_proper->expression = result.node;
+
+                return ParseResult{.node = double_starred};
         }
 
         else {
-                AstNode *kvpair = node_alloc(ast_arena);
+                AstNode *kvpair = node_alloc(parser->ast_arena);
                 kvpair->type = AstNodeType::KVPAIR;
-                kvpair->token = tokeniser->last_returned;
+                kvpair->token = parser->token_arr->current;
                 AstNodeKvPair *kvpair_proper = &kvpair->kvpair;
-                kvpair_proper->key = parse_expression(tokeniser, ast_arena,
-                                                      scope, compiler_tables,
-                                                      symbol_table_arena, 0);
-                assert_token_and_print_debug(
-                        TokenType::COLON, tokeniser->last_returned,
+                ParseResult result = parse_expression(parser, 0);
+
+                if (result.error.type != ParseErrorType::NONE)
+                        return result;
+
+                kvpair_proper->key = result.node;
+                ParseResult assert_result = assert_token_and_print_debug(
+                        parser, TokenType::COLON,
                         "Key Value pairs must be seperated by ':'");
 
-                tokeniser->next_token();
-                kvpair_proper->value = parse_expression(tokeniser, ast_arena,
-                                                        scope, compiler_tables,
-                                                        symbol_table_arena, 0);
+                if (assert_result.error.type != ParseErrorType::NONE)
+                        return assert_result;
 
-                return kvpair;
+                parser->token_arr->next_token();
+                result = parse_expression(parser, 0);
+
+                if (result.error.type != ParseErrorType::NONE)
+                        return result;
+
+                kvpair_proper->value = result.node;
+
+                return ParseResult{.node = kvpair};
         }
 }
 
-static AstNode *parse_double_starred_kvpairs(Tokeniser *tokeniser,
-                                             Arena *ast_arena,
-                                             SymbolTableEntry *scope,
-                                             CompilerTables *compiler_tables,
-                                             Arena *symbol_table_arena)
+static ParseResult parse_double_starred_kvpairs(Parser *parser)
 {
-        AstNode *current_kvpair = parse_single_double_starred_kvpair(
-                tokeniser, ast_arena, scope, compiler_tables,
-                symbol_table_arena);
+        ParseResult result = parse_single_double_starred_kvpair(parser);
+
+        if (result.error.type != ParseErrorType::NONE)
+                return result;
+
+        AstNode *current_kvpair = result.node;
         AstNode *head_kvpair = current_kvpair;
-        while (tokeniser->last_returned.type == TokenType::COMMA) {
-                tokeniser->next_token();
-                current_kvpair->adjacent_child =
-                        parse_single_double_starred_kvpair(tokeniser, ast_arena,
-                                                           scope,
-                                                           compiler_tables,
-                                                           symbol_table_arena);
+        while (parser->token_arr->current.type == TokenType::COMMA) {
+                parser->token_arr->next_token();
+                result =
+                        parse_single_double_starred_kvpair(parser);
+
+                if (result.error.type != ParseErrorType::NONE)
+                        return result;
+
+                current_kvpair->adjacent_child = result.node;
                 current_kvpair = current_kvpair->adjacent_child;
         }
 
-        return head_kvpair;
+        return ParseResult{.node = head_kvpair};
 }
 
-static AstNode *parse_single_for_if_clause(Tokeniser *tokeniser,
-                                           Arena *ast_arena,
-                                           SymbolTableEntry *scope,
-                                           CompilerTables *compiler_tables,
-                                           Arena *symbol_table_arena)
+static ParseResult parse_single_for_if_clause(Parser *parser)
 {
-        AstNode *for_if = node_alloc(ast_arena);
+        AstNode *for_if = node_alloc(parser->ast_arena);
         for_if->type = AstNodeType::FOR_IF;
-        for_if->token = tokeniser->last_returned;
+        for_if->token = parser->token_arr->current;
         AstNodeForIfClause *for_if_proper = &for_if->for_if;
-        for_if_proper->targets = parse_star_targets(tokeniser, ast_arena, scope,
-                                                    compiler_tables,
-                                                    symbol_table_arena);
-        assert_token_and_print_debug(TokenType::IN_TOK,
-                                     tokeniser->last_returned,
-                                     "expected in token in for if clause");
+        ParseResult result = parse_star_targets(parser);
 
-        tokeniser->next_token();
-        for_if_proper->expression = parse_disjunction(tokeniser, ast_arena,
-                                                      scope, compiler_tables,
-                                                      symbol_table_arena, 0);
+        if (result.error.type != ParseErrorType::NONE)
+                return result;
 
-        if (tokeniser->last_returned.type == TokenType::IF) {
-                tokeniser->next_token();
-                for_if_proper->if_clause = parse_expression(
-                        tokeniser, ast_arena, scope, compiler_tables,
-                        symbol_table_arena, 0);
+        for_if_proper->targets = result.node;
+        ParseResult assert_result = assert_token_and_print_debug(
+                parser, TokenType::IN_TOK,
+                "expected in token in for if clause");
+
+        if (assert_result.error.type != ParseErrorType::NONE)
+                return assert_result;
+
+        parser->token_arr->next_token();
+        result = parse_disjunction(parser, 0);
+
+        if (result.error.type != ParseErrorType::NONE)
+                return result;
+
+        for_if_proper->expression = result.node;
+
+        if (parser->token_arr->current.type == TokenType::IF) {
+                parser->token_arr->next_token();
+                result =
+                        parse_expression(parser, 0);
+
+                if (result.error.type != ParseErrorType::NONE)
+                        return result;
+
+                for_if_proper->if_clause = result.node;
         }
 
-        return for_if;
+        return ParseResult{.node = for_if};
 }
 
-static AstNode *parse_for_if_clauses(Tokeniser *tokeniser, Arena *ast_arena,
-                                     SymbolTableEntry *scope,
-                                     CompilerTables *compiler_tables,
-                                     Arena *symbol_table_arena)
+static ParseResult parse_for_if_clauses(Parser *parser)
 {
-        AstNode *head = parse_single_for_if_clause(tokeniser, ast_arena, scope,
-                                                   compiler_tables,
-                                                   symbol_table_arena);
+        ParseResult result = parse_single_for_if_clause(parser);
+
+        if (result.error.type != ParseErrorType::NONE)
+                return result;
+
+        AstNode *head = result.node;
         AstNode **child = &head->adjacent_child;
-        while (tokeniser->last_returned.type == TokenType::FOR) {
-                *child = parse_single_for_if_clause(tokeniser, ast_arena, scope,
-                                                    compiler_tables,
-                                                    symbol_table_arena);
+        while (parser->token_arr->current.type == TokenType::FOR) {
+                result = parse_single_for_if_clause(parser);
+
+                if (result.error.type != ParseErrorType::NONE)
+                        return result;
+
+                *child = result.node;
         }
 
-        return head;
+        return ParseResult{.node = head};
 }
-static AstNode *parse_gen_expr_from_first_child(Tokeniser *tokeniser,
-                                              Arena *ast_arena,
-                                              SymbolTableEntry *scope,
-                                              CompilerTables *compiler_tables,
-                                              Arena *symbol_table_arena,
-                                              AstNode *first_child)
+static ParseResult 
+parse_gen_expr_from_first_child(Parser *parser, AstNode *first_child)
 {
-        if (tokeniser->last_returned.type == TokenType::FOR) {
-                AstNode *node = node_alloc(ast_arena);
-                node->token = tokeniser->last_returned;
+        if (parser->token_arr->current.type == TokenType::FOR) {
+                AstNode *node = node_alloc(parser->ast_arena);
+                node->token = parser->token_arr->current;
 
                 if (first_child->type == AstNodeType::STARRED) {
-                        parser_exit_with_error_msg(
-                                "Generator expressions cannot contain star expressions",
-                                tokeniser);
+                        return parser_create_error_from_msg(
+                                parser,
+                                "Generator expressions cannot contain star expressions");
                 }
-                tokeniser->next_token();
+                parser->token_arr->next_token();
 
                 node->type = AstNodeType::GEN_EXPR;
                 node->gen_expr.expression = first_child;
-                node->gen_expr.for_if_clauses = parse_for_if_clauses(
-                        tokeniser, ast_arena, scope, compiler_tables,
-                        symbol_table_arena);
+                ParseResult result =
+                        parse_for_if_clauses(parser);
 
-                return node;
+                if (result.error.type != ParseErrorType::NONE)
+                        return result;
+
+                node->gen_expr.for_if_clauses = result.node;
+
+                return ParseResult{.node = node};
         }
 
-        return first_child;
+        return ParseResult{.node = first_child};
 }
 
-static AstNode *parse_tuple_or_genxpr_from_first_child(Tokeniser *tokeniser,
-                                              Arena *ast_arena,
-                                              SymbolTableEntry *scope,
-                                              CompilerTables *compiler_tables,
-                                              Arena *symbol_table_arena,
-                                              AstNode *first_child)
+static ParseResult parse_tuple_or_genxpr_from_first_child(Parser *parser, 
+                                                          AstNode *first_child)
 {
-        AstNode *maybe_gen = parse_gen_expr_from_first_child(tokeniser, ast_arena, scope,
-                                        compiler_tables, symbol_table_arena,
-                                        first_child);
+        ParseResult result = parse_gen_expr_from_first_child(parser,
+                                                             first_child);
+
+        if (result.error.type != ParseErrorType::NONE)
+                return result;
+
+        AstNode *maybe_gen = result.node;
 
         if (maybe_gen != first_child) {
-                return maybe_gen;
+                return ParseResult{.node = maybe_gen};
         }
 
-        AstNode *node = node_alloc(ast_arena);
+        AstNode *node = node_alloc(parser->ast_arena);
         node->type = AstNodeType::TUPLE;
         node->tuple.children = first_child;
 
-        if (tokeniser->last_returned.type == TokenType::COMMA) {
-                AstNode *node = node_alloc(ast_arena);
-                node->token = tokeniser->last_returned;
+        if (parser->token_arr->current.type == TokenType::COMMA) {
+                node->token = parser->token_arr->current;
+                parser->token_arr->next_token();
 
-                tokeniser->next_token();
-                first_child->adjacent_child = parse_assignment_star_expressions(
-                        tokeniser, ast_arena, scope, compiler_tables,
-                        symbol_table_arena, false);
+                if (parser->token_arr->current.type == TokenType::CLOSED_PAREN) {
+                        parser->token_arr->next_token();
+                        return ParseResult{.node = node};
+                }
+
+                result = parse_assignment_star_expressions(parser, false);
+
+                if (result.error.type != ParseErrorType::NONE)
+                        return result;
+
+                first_child->adjacent_child = result.node;
         }
 
-        assert_token_and_print_debug(
-                TokenType::CLOSED_PAREN, tokeniser->last_returned,
+        ParseResult assert_result = assert_token_and_print_debug(
+                parser, TokenType::CLOSED_PAREN,
                 "Mismatched parenthesis in tuple declaration");
-        tokeniser->next_token();
-        return node;
+
+        if (assert_result.error.type != ParseErrorType::NONE)
+                return assert_result;
+        parser->token_arr->next_token();
+        return ParseResult{.node = node};
 }
 
-static AstNode *parse_atom(Tokeniser *tokeniser, Arena *ast_arena,
-                           SymbolTableEntry *scope,
-                           CompilerTables *compiler_tables,
-                           Arena *symbol_table_arena)
+static ParseResult parse_atom(Parser *parser, bool add_to_symbol_table)
 {
-        if (tokeniser->last_returned.type == TokenType::SQUARE_OPEN_PAREN) {
+        if (parser->token_arr->current.type == TokenType::SQUARE_OPEN_PAREN) {
                 //parse list
-                AstNode *node = node_alloc(ast_arena);
-                node->token = tokeniser->last_returned;
+                AstNode *node = node_alloc(parser->ast_arena);
+                node->token = parser->token_arr->current;
                 node->type = AstNodeType::LIST;
 
-                tokeniser->next_token();
+                parser->token_arr->next_token();
 
-                if (tokeniser->last_returned.type ==
+                if (parser->token_arr->current.type ==
                     TokenType::SQUARE_CLOSED_PAREN) {
-                        tokeniser->next_token();
-                        return node;
+                        parser->token_arr->next_token();
+                        return ParseResult{.node = node};
                 }
 
-                node->list.children = parse_single_assignment_star_expression(
-                        tokeniser, ast_arena, scope, compiler_tables,
-                        symbol_table_arena);
+                ParseResult result = parse_single_assignment_star_expression(parser);
 
-                if (tokeniser->last_returned.type == TokenType::FOR) {
-                        tokeniser->next_token();
+                if (result.error.type != ParseErrorType::NONE)
+                        return result;
+
+                node->list.children = result.node;
+
+                if (parser->token_arr->current.type == TokenType::FOR) {
+                        parser->token_arr->next_token();
                         node->type = AstNodeType::LISTCOMP;
-                        node->list.children = parse_for_if_clauses(
-                                tokeniser, ast_arena, scope, compiler_tables,
-                                symbol_table_arena);
+                        result = parse_for_if_clauses(parser);
+
+                        if (result.error.type != ParseErrorType::NONE)
+                                return result;
+
+                        node->list.children = result.node;
                 }
 
-                if (tokeniser->last_returned.type == TokenType::COMMA) {
-                        tokeniser->next_token();
-                        node->list.children->adjacent_child =
-                                parse_assignment_star_expressions(
-                                        tokeniser, ast_arena, scope,
-                                        compiler_tables, symbol_table_arena,
-                                        false);
+                if (parser->token_arr->current.type == TokenType::COMMA) {
+                        parser->token_arr->next_token();
+                        result =
+                                parse_assignment_star_expressions(parser, false);
+
+                        if (result.error.type != ParseErrorType::NONE)
+                                return result;
+
+                        node->list.children->adjacent_child = result.node;
                 }
 
-                assert_token_and_print_debug(TokenType::SQUARE_CLOSED_PAREN,
-                                             tokeniser->last_returned,
-                                             "Mismatched parenthesis in list");
-                tokeniser->next_token();
-                return node;
-        } else if (tokeniser->last_returned.type == TokenType::OPEN_PAREN) {
+                ParseResult assert_result = assert_token_and_print_debug(
+                        parser, TokenType::SQUARE_CLOSED_PAREN,
+                        "Mismatched parenthesis in list");
+
+                if (assert_result.error.type != ParseErrorType::NONE)
+                        return assert_result;
+                parser->token_arr->next_token();
+                return ParseResult{.node = node};
+        } else if (parser->token_arr->current.type == TokenType::OPEN_PAREN) {
                 // parse tuple
-                Token token = tokeniser->last_returned;
-                tokeniser->next_token();
+                Token token = parser->token_arr->current;
+                parser->token_arr->next_token();
 
-                if (tokeniser->last_returned.type == TokenType::CLOSED_PAREN) {
-                        tokeniser->next_token();
-                        AstNode *node = node_alloc(ast_arena);
+                if (parser->token_arr->current.type == TokenType::CLOSED_PAREN) {
+                        parser->token_arr->next_token();
+                        AstNode *node = node_alloc(parser->ast_arena);
                         node->type = AstNodeType::TUPLE;
                         node->token = token;
-                        return node;
+                        return ParseResult{.node = node};
                 }
 
-                AstNode *first_child = parse_single_assignment_star_expression(
-                        tokeniser, ast_arena, scope, compiler_tables,
-                        symbol_table_arena);
+                ParseResult result = parse_single_assignment_star_expression(parser);
+
+                if (result.error.type != ParseErrorType::NONE)
+                        return result;
+
+                AstNode *first_child = result.node;
 
                 // parse genexpr
-                return parse_tuple_or_genxpr_from_first_child(tokeniser, ast_arena,
-                                                       scope, compiler_tables,
-                                                       symbol_table_arena,
-                                                       first_child);
+                return parse_tuple_or_genxpr_from_first_child(parser, 
+                                                              first_child);
 
+        } else if (parser->token_arr->current.type ==
+                   TokenType::CURLY_OPEN_PAREN) {
+                AstNode *node = node_alloc(parser->ast_arena);
+                node->token = parser->token_arr->current;
+                parser->token_arr->next_token();
 
-        } else if (tokeniser->last_returned.type == TokenType::CURLY_OPEN_PAREN) {
-                AstNode *node = node_alloc(ast_arena);
-                node->token = tokeniser->last_returned;
-                tokeniser->next_token();
-
-                if (tokeniser->last_returned.type ==
+                if (parser->token_arr->current.type ==
                     TokenType::CURLY_CLOSED_PAREN) {
-                        tokeniser->next_token();
+                        parser->token_arr->next_token();
                         node->type = AstNodeType::DICT;
-                        return node;
+                        return ParseResult{.node = node};
                 }
 
                 AstNode maybe_first_child = {};
-                maybe_first_child.token = tokeniser->last_returned;
-                AstNode *expression = parse_expression(tokeniser, ast_arena,
-                                                       scope, compiler_tables,
-                                                       symbol_table_arena, 0);
+                maybe_first_child.token = parser->token_arr->current;
+                ParseResult result = parse_expression(parser, 0);
 
+                if (result.error.type != ParseErrorType::NONE)
+                        return result;
+
+                AstNode *expression = result.node;
 
                 node->type = AstNodeType::DICT;
-                if (tokeniser->last_returned.type ==
+                if (parser->token_arr->current.type ==
                     TokenType::EXPONENTIATION) {
-                        node->dict.children = parse_double_starred_kvpairs(
-                                tokeniser, ast_arena, scope, compiler_tables,
-                                symbol_table_arena);
-                        return node;
+                        result = parse_double_starred_kvpairs(parser);
+
+                        if (result.error.type != ParseErrorType::NONE)
+                                return result;
+
+                        node->dict.children = result.node;
+                        return ParseResult{.node = node};
                 }
 
-                if (tokeniser->last_returned.type == TokenType::COLON_EQUAL) {
-                        node->dict.children = parse_assignment_or_declaration(
-                                tokeniser, ast_arena, scope, compiler_tables,
-                                symbol_table_arena, expression);
-                        return node;
+                if (parser->token_arr->current.type == TokenType::COLON_EQUAL) {
+                        result = parse_assignment_or_declaration(parser, 
+                                                                 expression);
+
+                        if (result.error.type != ParseErrorType::NONE)
+                                return result;
+
+                        node->dict.children = result.node;
+                        return ParseResult{.node = node};
                 }
 
-                AstNode *first_child = node_alloc(ast_arena);
+                AstNode *first_child = node_alloc(parser->ast_arena);
                 first_child->token = maybe_first_child.token;
 
-                if (tokeniser->last_returned.type == TokenType::COLON) {
+                if (parser->token_arr->current.type == TokenType::COLON) {
                         node->dict.children = first_child;
-                        tokeniser->next_token();
+                        parser->token_arr->next_token();
                         first_child->type = AstNodeType::KVPAIR;
                         AstNodeKvPair *kvpair = &first_child->kvpair;
 
                         kvpair->key = expression;
-                        kvpair->value = parse_expression(tokeniser, ast_arena,
-                                                         scope, compiler_tables,
-                                                         symbol_table_arena, 0);
+                        result = parse_expression(parser, 0);
 
-                        if (tokeniser->last_returned.type == TokenType::FOR) {
-                                tokeniser->next_token();
-                                first_child->adjacent_child =
-                                        parse_single_for_if_clause(
-                                                tokeniser, ast_arena, scope,
-                                                compiler_tables,
-                                                symbol_table_arena);
+                        if (result.error.type != ParseErrorType::NONE)
+                                return result;
+
+                        kvpair->value = result.node;
+
+                        if (parser->token_arr->current.type == TokenType::FOR) {
+                                parser->token_arr->next_token();
+                                result =
+                                        parse_single_for_if_clause(parser);
+
+                                if (result.error.type != ParseErrorType::NONE)
+                                        return result;
+
+                                first_child->adjacent_child = result.node;
                         }
 
-                        if (tokeniser->last_returned.type == TokenType::COMMA) {
-                                tokeniser->next_token();
-                                first_child->adjacent_child =
-                                        parse_double_starred_kvpairs(
-                                                tokeniser, ast_arena, scope,
-                                                compiler_tables,
-                                                symbol_table_arena);
+                        if (parser->token_arr->current.type == TokenType::COMMA) {
+                                parser->token_arr->next_token();
+                                result =
+                                        parse_double_starred_kvpairs(parser);
+
+                                if (result.error.type != ParseErrorType::NONE)
+                                        return result;
+
+                                first_child->adjacent_child = result.node;
                         }
 
                 } else {
                         // parse set definition
-                        if (tokeniser->last_returned.type == TokenType::FOR) {
-                                tokeniser->next_token();
-                                first_child->adjacent_child =
-                                        parse_single_for_if_clause(
-                                                tokeniser, ast_arena, scope,
-                                                compiler_tables,
-                                                symbol_table_arena);
+                        if (parser->token_arr->current.type == TokenType::FOR) {
+                                parser->token_arr->next_token();
+                                result =
+                                        parse_single_for_if_clause(parser);
+
+                                if (result.error.type != ParseErrorType::NONE)
+                                        return result;
+
+                                first_child->adjacent_child = result.node;
                         }
 
                         else {
-                                tokeniser->next_token();
-                                first_child->adjacent_child =
+                                parser->token_arr->next_token();
+                                result =
                                         parse_assignment_star_expressions(
-                                                tokeniser, ast_arena, scope,
-                                                compiler_tables,
-                                                symbol_table_arena, false);
+                                                parser, false);
+
+                                if (result.error.type != ParseErrorType::NONE)
+                                        return result;
+
+                                first_child->adjacent_child = result.node;
                         }
                 }
 
-                assert_token_and_print_debug(
-                        TokenType::CURLY_CLOSED_PAREN, tokeniser->last_returned,
+                ParseResult assert_result = assert_token_and_print_debug(
+                        parser, TokenType::CURLY_CLOSED_PAREN,
                         "Mismatched '}' in set definition");
-                tokeniser->next_token();
 
-                return node;
-        } else if (tokeniser->last_returned.is_literal()) {
-                AstNode *node = node_alloc(ast_arena);
-                node->token = tokeniser->last_returned;
-                tokeniser->next_token();
-                return node;
+                if (assert_result.error.type != ParseErrorType::NONE)
+                        return assert_result;
+                parser->token_arr->next_token();
+
+                return ParseResult{.node = node};
+        } else if (parser->token_arr->current.is_literal()) {
+                AstNode *node = node_alloc(parser->ast_arena);
+
+                if (parser->token_arr->current.type == TokenType::IDENTIFIER)
+                        node->type = AstNodeType::IDENTIFIER;
+                else 
+                        node->type = AstNodeType::TERMINAL;
+
+                node->token = parser->token_arr->current;
+                parser->token_arr->next_token();
+                return ParseResult{.node = node};
         }
 
         else {
-                return nullptr;
+
+                ParseResult result;
+
+                if (parser->token_arr->current.type == TokenType::ENDFILE)
+                        result = parser_create_error_from_msg(
+                                parser, "Unexpected EOF while parsing");
+                else
+                        result = parser_create_error_from_msg(
+                                parser, "Invalid Syntax");
+
+                parser->token_arr->next_token();
+
+                return result;
         }
 }
 
-static inline AstNode *parse_left(Tokeniser *tokeniser, Arena *ast_arena,
-                                  SymbolTableEntry *scope,
-                                  CompilerTables *compiler_tables,
-                                  Arena *symbol_table_arena)
+static ParseResult parse_left(Parser *parser)
 {
         AstNode *left = nullptr;
-        if (tokeniser->last_returned.type == TokenType::OPEN_PAREN) {
-                Token token = tokeniser->last_returned;
+        if (parser->token_arr->current.type == TokenType::OPEN_PAREN) {
+                Token token = parser->token_arr->current;
                 // parse tuple or genxpr
-                tokeniser->next_token();
+                parser->token_arr->next_token();
 
-                if (tokeniser->last_returned.type == TokenType::CLOSED_PAREN) {
-                        tokeniser->next_token();
-                        AstNode *node = node_alloc(ast_arena);
+                if (parser->token_arr->current.type == TokenType::CLOSED_PAREN) {
+                        parser->token_arr->next_token();
+                        AstNode *node = node_alloc(parser->ast_arena);
                         node->type = AstNodeType::TUPLE;
                         node->token = token;
-                        return node;
+                        return ParseResult{.node = node};
                 }
 
-                left = parse_star_expression(tokeniser, ast_arena, scope,
-                                             compiler_tables,
-                                             symbol_table_arena);
+                ParseResult result = parse_star_expression(parser);
 
-                if (tokeniser->last_returned.type == TokenType::CLOSED_PAREN &&
-                    tokeniser->lookahead.is_binary_op()) {
-                        tokeniser->next_token();
-                        return left;
+                if (result.error.type != ParseErrorType::NONE)
+                        return result;
+
+                left = result.node;
+
+                if (parser->token_arr->current.type == TokenType::CLOSED_PAREN &&
+                    parser->token_arr->lookahead.is_binary_op()) {
+                        parser->token_arr->next_token();
+                        return ParseResult{.node = left};
                 }
 
-                left = parse_assignment_or_declaration(tokeniser, ast_arena,
-                                                       scope, compiler_tables,
-                                                       symbol_table_arena,
-                                                       left);
+                result = parse_assignment_or_declaration(parser, left);
 
-                return parse_tuple_or_genxpr_from_first_child(
-                        tokeniser, ast_arena, scope, compiler_tables,
-                        symbol_table_arena, left);
+                if (result.error.type != ParseErrorType::NONE)
+                        return result;
 
-        } else if (tokeniser->last_returned.is_unary_op()) {
-                left = node_alloc(ast_arena);
+                left = result.node;
+
+                return parse_tuple_or_genxpr_from_first_child(parser, left);
+
+        } else if (parser->token_arr->current.is_unary_op()) {
+                left = node_alloc(parser->ast_arena);
                 left->type = AstNodeType::UNARY;
-                left->token = tokeniser->last_returned;
-                tokeniser->next_token();
-                left->unary.child = parse_left(tokeniser, ast_arena, scope,
-                                               compiler_tables,
-                                               symbol_table_arena);
+                left->token = parser->token_arr->current;
+                parser->token_arr->next_token();
+                ParseResult result = parse_left(parser);
+
+                if (result.error.type != ParseErrorType::NONE)
+                        return result;
+
+                left->unary.child = result.node;
         } else {
-                left = parse_primary(tokeniser, ast_arena, scope,
-                                     compiler_tables, symbol_table_arena);
+                ParseResult result = parse_primary(parser);
+
+                if (result.error.type != ParseErrorType::NONE)
+                        return result;
+
+                left = result.node;
         }
 
-        return left;
+        return ParseResult{.node = left};
 }
 
 // NOTE: this is exactly the same as parse_inc_precedence except the precedence cannot be less
 // than bitwise_or expressions this is used for python star expressions to disallow boolean operations
 // inside star expressions
-static AstNode *parse_inc_precedence_minimum_bitwise_or_precedence(
-        Tokeniser *tokeniser, Arena *ast_arena, AstNode *left,
-        SymbolTableEntry *scope, CompilerTables *compiler_tables,
-        Arena *symbol_table_arena, int min_precedence)
+static ParseResult parse_inc_precedence_minimum_bitwise_or_precedence(
+        Parser *parser, AstNode *left, int min_precedence)
 {
-        Token current_token = tokeniser->last_returned;
+        Token current_token = parser->token_arr->current;
 
         if (current_token.type == TokenType::ENDFILE) {
-                printf("Unexpected EOF while parsing expression\n");
-                return nullptr;
+                return parser_create_error_from_msg(
+                        parser, "Unexpected EOF while parsing");
         }
 
         if (!current_token.is_binary_op()) {
-                return left;
+                return ParseResult{.node = left};
         }
 
         int current_precedence = current_token.precedence();
 
         if (current_precedence >= (int)TokenType::BWOR &&
             current_precedence > min_precedence) {
-                tokeniser->next_token();
-                AstNode *right = parse_expression(tokeniser, ast_arena, scope,
-                                                  compiler_tables,
-                                                  symbol_table_arena,
-                                                  current_precedence);
+                parser->token_arr->next_token();
+                ParseResult result = parse_expression(parser, current_precedence);
+
+                if (result.error.type != ParseErrorType::NONE)
+                        return result;
+
+                AstNode *right = result.node;
 
                 if (!right) {
-                        printf("UNEXPECTED END OF TOKEN STREAM\n");
-                        return nullptr;
+                        assert(false);
+                        return parser_create_error_from_msg(
+                                parser, "Unexpected end of token stream");
                 }
 
-                AstNode *binary_op_node = node_alloc(ast_arena);
+                AstNode *binary_op_node = node_alloc(parser->ast_arena);
                 *binary_op_node =
                         AstNode::create_binary(current_token, left, right);
-                return binary_op_node;
+                return ParseResult{.node = binary_op_node};
         }
 
         else {
-                return left;
+                return ParseResult{.node = left};
         }
 }
 
-static AstNode *parse_bitwise_or_minimum_precedence(
-        Tokeniser *tokeniser, Arena *ast_arena, SymbolTableEntry *scope,
-        CompilerTables *compiler_tables, Arena *symbol_table_arena,
-        int min_precedence)
+static ParseResult parse_bitwise_or_minimum_precedence(Parser *parser,
+                                                       int min_precedence)
 {
-        AstNode *left = parse_left(tokeniser, ast_arena, scope, compiler_tables,
-                                   symbol_table_arena);
+        ParseResult result = parse_left(parser);
+
+        if (result.error.type != ParseErrorType::NONE)
+                return result;
+
+        AstNode *left = result.node;
         // parse star primary
 
         while (true) {
-                AstNode *node =
+                result =
                         parse_inc_precedence_minimum_bitwise_or_precedence(
-                                tokeniser, ast_arena, left, scope,
-                                compiler_tables, symbol_table_arena,
-                                min_precedence);
+                                parser, left, min_precedence);
+
+                if (result.error.type != ParseErrorType::NONE)
+                        return result;
+
+                AstNode *node = result.node;
 
                 if (node == left) {
                         break;
@@ -1390,95 +1964,105 @@ static AstNode *parse_bitwise_or_minimum_precedence(
                 left = node;
         }
 
-        return left;
+        return ParseResult{.node = left};
 }
 
-static AstNode *parse_star_expression(Tokeniser *tokeniser, Arena *ast_arena,
-                                      SymbolTableEntry *scope,
-                                      CompilerTables *compiler_tables,
-                                      Arena *symbol_table_arena)
+static ParseResult parse_star_expression(Parser *parser)
 {
-        if (tokeniser->last_returned.type != TokenType::MULTIPLICATION) {
-                return parse_expression(tokeniser, ast_arena, scope,
-                                        compiler_tables, symbol_table_arena, 0);
+        if (parser->token_arr->current.type != TokenType::MULTIPLICATION) {
+                return parse_expression(parser, 0);
         }
 
-        return parse_bitwise_or_minimum_precedence(tokeniser, ast_arena, scope,
-                                                   compiler_tables,
-                                                   symbol_table_arena, 0);
+        return parse_bitwise_or_minimum_precedence(parser, 0);
 }
 
-static AstNode *parse_star_expressions(Tokeniser *tokeniser, Arena *ast_arena,
-                                       SymbolTableEntry *scope,
-                                       CompilerTables *compiler_tables,
-                                       Arena *symbol_table_arena)
+static ParseResult parse_star_expressions(Parser *parser)
 {
-        return parse_comma_seperated_in_tuple_func(tokeniser, ast_arena, scope,
-                                                   compiler_tables,
-                                                   symbol_table_arena,
-                                                   parse_star_expression);
+        return parse_comma_seperated_in_tuple_func(parser, parse_star_expression);
 }
 
-static AstNode *parse_increasing_precedence(Tokeniser *tokeniser,
-                                            Arena *ast_arena, AstNode *left,
-                                            SymbolTableEntry *scope,
-                                            CompilerTables *compiler_tables,
-                                            Arena *symbol_table_arena,
-                                            int min_precedence)
+static ParseResult parse_increasing_precedence(Parser *parser, 
+                                               AstNode *left, 
+                                               int min_precedence)
 {
-        Token current_token = tokeniser->last_returned;
+        Token current_token = parser->token_arr->current;
 
         if (current_token.type == TokenType::ENDFILE) {
-                return left;
+                return ParseResult{.node = left};
         }
 
         if (current_token.type == TokenType::OPEN_PAREN) {
-                tokeniser->next_token();
-                parse_expression(tokeniser, ast_arena, scope, compiler_tables,
-                                 symbol_table_arena, 0);
+                parser->token_arr->next_token();
+                parse_expression(parser, 0);
         }
 
         if (!current_token.is_binary_op()) {
-                return left;
+                return ParseResult{.node = left};
+        }
+
+        if (current_token.is_augassign_op() &&
+            parser->token_arr->lookahead.type == TokenType::ASSIGN) {
+                parser->token_arr->next_token();
+                ParseResult result = parse_assignment_or_declaration(parser, left);
+
+                if (result.error.type != ParseErrorType::NONE)
+                        return result;
+
+                AstNode *assign = result.node;
+
+                AstNode *binary = node_alloc(parser->ast_arena);
+                binary->binary.left = left;
+                binary->binary.right = assign->assignment.expression;
+                assign->assignment.expression = binary;
+
+                return ParseResult{.node = assign};
         }
 
         int current_precedence = current_token.precedence();
         if (current_precedence > min_precedence) {
-                tokeniser->next_token();
-                AstNode *right = parse_expression(tokeniser, ast_arena, scope,
-                                                  compiler_tables,
-                                                  symbol_table_arena,
-                                                  current_precedence);
+                parser->token_arr->next_token();
+                ParseResult result = parse_expression(parser, current_precedence);
+
+                if (result.error.type != ParseErrorType::NONE)
+                        return result;
+
+                AstNode *right = result.node;
 
                 if (!right) {
-                        printf("UNEXPECTED END OF TOKEN STREAM\n");
-                        return nullptr;
+                        assert(false);
+                        return parser_create_error_from_msg(
+                                parser, "Unexpected end of Token Stream");
                 }
 
-                AstNode *binary_op_node = node_alloc(ast_arena);
+                AstNode *binary_op_node = node_alloc(parser->ast_arena);
                 *binary_op_node =
                         AstNode::create_binary(current_token, left, right);
-                return binary_op_node;
+                return ParseResult{.node = binary_op_node};
         }
 
         else {
-                return left;
+                return ParseResult{.node = left};
         }
 }
 
-static AstNode *parse_disjunction(Tokeniser *tokeniser, Arena *ast_arena,
-                                  SymbolTableEntry *scope,
-                                  CompilerTables *compiler_tables,
-                                  Arena *symbol_table_arena, int min_precedence)
+static ParseResult parse_disjunction(Parser *parser, int min_precedence)
 {
-        AstNode *left = parse_left(tokeniser, ast_arena, scope, compiler_tables,
-                                   symbol_table_arena);
+        ParseResult result = parse_left(parser);
+
+        if (result.error.type != ParseErrorType::NONE)
+                return result;
+
+        AstNode *left = result.node;
         // parse star primary
 
         while (true) {
-                AstNode *node = parse_increasing_precedence(
-                        tokeniser, ast_arena, left, scope, compiler_tables,
-                        symbol_table_arena, min_precedence);
+                result = parse_increasing_precedence(parser, left, min_precedence);
+
+                if (result.error.type != ParseErrorType::NONE)
+                        return result;
+
+                AstNode *node = result.node;
+
                 if (node == left) {
                         break;
                 }
@@ -1486,443 +2070,661 @@ static AstNode *parse_disjunction(Tokeniser *tokeniser, Arena *ast_arena,
                 left = node;
         }
 
-        return left;
+        return ParseResult{.node = left};
 }
 
-static AstNode *parse_expression(Tokeniser *tokeniser, Arena *ast_arena,
-                                 SymbolTableEntry *scope,
-                                 CompilerTables *compiler_tables,
-                                 Arena *symbol_table_arena, int min_precedence)
+static ParseResult parse_expression(Parser *parser, int min_precedence)
 {
-        AstNode *expr = parse_disjunction(tokeniser, ast_arena, scope,
-                                          compiler_tables, symbol_table_arena,
-                                          min_precedence);
-        if (tokeniser->last_returned.type != TokenType::IF) {
-                return expr;
+        ParseResult result = parse_disjunction(parser, min_precedence);
+
+        if (result.error.type != ParseErrorType::NONE)
+                return result;
+
+        AstNode *expr = result.node;
+
+        if (parser->token_arr->current.type != TokenType::IF) {
+                return ParseResult{.node = expr};
         }
 
-        AstNode *if_expr = node_alloc(ast_arena);
+        AstNode *if_expr = node_alloc(parser->ast_arena);
         if_expr->type = AstNodeType::IF_EXPR;
-        if_expr->token = tokeniser->last_returned;
+        if_expr->token = parser->token_arr->current;
         if_expr->if_expr.true_expression = expr;
 
-        tokeniser->next_token();
-        if_expr->if_expr.condition = parse_disjunction(tokeniser, ast_arena,
-                                                       scope, compiler_tables,
-                                                       symbol_table_arena, 0);
+        parser->token_arr->next_token();
+        result = parse_disjunction(parser, 0);
+        if (result.error.type != ParseErrorType::NONE)
+                return result;
 
-        assert_token_and_print_debug(TokenType::ELSE, tokeniser->last_returned,
-                                     "In if expressions else is required");
-        tokeniser->next_token();
+        if_expr->if_expr.condition = result.node;
 
-        if_expr->if_expr.false_expression =
-                parse_expression(tokeniser, ast_arena, scope, compiler_tables,
-                                 symbol_table_arena, min_precedence);
+        ParseResult assert_result = assert_token_and_print_debug(
+                parser, TokenType::ELSE,
+                "In if expressions else is required");
 
-        return if_expr;
+        if (assert_result.error.type != ParseErrorType::NONE)
+                return assert_result;
+        parser->token_arr->next_token();
+
+        result = parse_expression(parser, min_precedence);
+
+        if (result.error.type != ParseErrorType::NONE)
+                return result;
+
+        if_expr->if_expr.false_expression = result.node;
+
+        return ParseResult{.node = if_expr};
 }
 
-static void assert_single_subscript_attribute(AstNode *node,
-                                              Tokeniser *tokeniser)
+static ParseResult assert_single_subscript_attribute(Parser *parser, 
+                                                     AstNode *node)
 {
         if (node->type == AstNodeType::FUNCTION_CALL) {
-                parser_exit_with_error_msg("Cannot assign to function",
-                                           tokeniser);
+                return parser_create_error_from_msg(
+                        parser, "Cannot assign to function");
         }
+
+        return ParseResult{};
 }
-static AstNode *parse_declaration(Tokeniser *tokeniser, Arena *ast_arena,
-                                 SymbolTableEntry *scope,
-                                 CompilerTables *compiler_tables,
-                                 Arena *symbol_table_arena, AstNode *left)
+
+static ParseResult parse_declaration(Parser *parser, AstNode *left)
 {
-        AstNode *node = node_alloc(ast_arena);
-        assert_single_subscript_attribute(left, tokeniser);
+        AstNode *node = node_alloc(parser->ast_arena);
+        ParseResult result = assert_single_subscript_attribute(parser, left);
+
+        if (result.error.type != ParseErrorType::NONE) {
+                return result;
+        }
+
         node->type = AstNodeType::DECLARATION;
-        node->token = tokeniser->last_returned;
+        node->token = parser->token_arr->current;
         AstNodeDeclaration *declaration = &node->declaration;
         declaration->name = left;
 
         SymbolTableValue value = {};
         value.node = node;
         assert_no_redefinition_and_insert_to_symbol_table(
-                symbol_table_arena, compiler_tables->variable_table, scope,
-                &declaration->name->token, &value);
+                parser->symbol_table_arena, parser->tables->symbol_table, parser->scope,
+                &declaration->name->token, &value, false);
 
-        tokeniser->next_token();
-        declaration->annotation = parse_type_annotation(tokeniser, ast_arena);
+        parser->token_arr->next_token();
+        result = parse_type_annotation(parser);
 
-        if (tokeniser->last_returned.type == TokenType::ASSIGN) {
-                tokeniser->next_token();
-                declaration->expression = parse_star_expressions(
-                        tokeniser, ast_arena, scope, compiler_tables,
-                        symbol_table_arena);
+        if (result.error.type != ParseErrorType::NONE)
+                return result;
+
+        declaration->annotation = result.node;
+
+        if (parser->token_arr->current.type == TokenType::ASSIGN) {
+                parser->token_arr->next_token();
+                result =
+                        parse_star_expressions(parser);
+                if (result.error.type != ParseErrorType::NONE)
+                        return result;
+                declaration->expression = result.node;
         }
 
-        return node;
+        return ParseResult{.node = node};
 }
 
-static AstNode *parse_assignment(Tokeniser *tokeniser, Arena *ast_arena,
-                                 SymbolTableEntry *scope,
-                                 CompilerTables *compiler_tables,
-                                 Arena *symbol_table_arena, AstNode *left)
+static ParseResult parse_assignment(Parser *parser, AstNode *left)
 {
-        AstNode *node = node_alloc(ast_arena);
-        node->token = tokeniser->last_returned;
-        assert_single_subscript_attribute(left, tokeniser);
+        AstNode *node = node_alloc(parser->ast_arena);
+        node->token = parser->token_arr->current;
+        assert_single_subscript_attribute(parser, left);
         node->type = AstNodeType::ASSIGNMENT;
         AstNodeAssignment *assignment = &node->assignment;
-        assignment->name = left;
-        if (!compiler_tables->variable_table->lookup(
-                    tokeniser->last_returned.value, scope)) {
+        assignment->left = left;
+        //
+
+        if (!parser->tables->symbol_table->lookup(parser->token_arr->current.value,
+                                          parser->scope)) {
                 SymbolTableValue value = {};
                 value.node = node;
                 value.static_type.type = TypeInfoType::ANY;
-                compiler_tables->variable_table->insert(
-                        symbol_table_arena, left->token.value, scope, &value);
+                parser->tables->symbol_table->insert(parser->symbol_table_arena,
+                                             left->token.value, parser->scope, &value);
         }
 
-        assert_token_and_print_debug(TokenType::ASSIGN,
-                                     tokeniser->last_returned,
-                                     "\nError in parsing assignment on line: ");
-        tokeniser->next_token();
+        ParseResult assert_result = assert_token_and_print_debug(
+                parser, TokenType::ASSIGN,
+                "\nError in parsing assignment on line: ");
 
-        assignment->expression = parse_star_expressions(tokeniser, ast_arena,
-                                                        scope, compiler_tables,
-                                                        symbol_table_arena);
+        if (assert_result.error.type != ParseErrorType::NONE)
+                return assert_result;
+        parser->token_arr->next_token();
 
-        return node;
+        ParseResult result = parse_star_expressions(parser);
+
+        if (result.error.type != ParseErrorType::NONE)
+                return result;
+
+        assignment->expression = result.node;
+
+        return ParseResult{.node = node};
 }
 
-static AstNode *parse_assignment_or_declaration(Tokeniser *tokeniser, Arena *ast_arena,
-                                 SymbolTableEntry *scope,
-                                 CompilerTables *compiler_tables,
-                                 Arena *symbol_table_arena, AstNode *left)
+static ParseResult 
+parse_assignment_or_declaration(Parser *parser, AstNode *left)
 {
-        if (tokeniser->last_returned.type == TokenType::ASSIGN) {
-                return parse_assignment(tokeniser, ast_arena, scope,
-                                         compiler_tables, symbol_table_arena,
-                                         left);
-        } else if (tokeniser->last_returned.type == TokenType::COLON) {
-                return parse_declaration(tokeniser, ast_arena, scope,
-                                         compiler_tables, symbol_table_arena,
-                                         left);
-        } else if (tokeniser->last_returned.type == TokenType::COLON_EQUAL) {
-                return parse_assignment(tokeniser, ast_arena, scope,
-                                        compiler_tables, symbol_table_arena,
-                                        left);
+        // FIXME: theres is a bug for multiple assignments
+        if (parser->token_arr->current.type == TokenType::ASSIGN) {
+                return parse_assignment(parser, left);
+        } else if (parser->token_arr->current.type == TokenType::COLON) {
+                return parse_declaration(parser, left);
+        } else if (parser->token_arr->current.type == TokenType::COLON_EQUAL) {
+                return parse_assignment(parser, left);
         }
 
-        return left;
+        return ParseResult{.node = left};
 }
 
-static AstNode *parse_next_star_expressions_into_children(
-        Tokeniser *tokeniser, Arena *ast_arena, SymbolTableEntry *scope,
-        CompilerTables *compiler_tables, Arena *symbol_table_arena, Token token)
+static ParseResult parse_next_star_expressions_into_children(Parser *parser, 
+                                                             Token token)
+
 {
-        AstNode *node = node_alloc(ast_arena);
+        AstNode *node = node_alloc(parser->ast_arena);
         node->token = token;
         node->type = AstNodeType::UNARY;
-        tokeniser->next_token();
-        AstNode *child = parse_star_expression(tokeniser, ast_arena, scope,
-                                               compiler_tables,
-                                               symbol_table_arena);
+        parser->token_arr->next_token();
+
+        if (parser->token_arr->current.type == TokenType::NEWLINE ||
+            parser->token_arr->current.type == TokenType::SEMICOLON) {
+                // return node with no error
+                return ParseResult{.node = node};
+        }
+
+        ParseResult result = parse_star_expression(parser);
+
+        if (result.error.type != ParseErrorType::NONE)
+                return result;
+
+        AstNode *child = result.node;
         node->unary.child = child;
 
-        if (tokeniser->last_returned.type == TokenType::COMMA &&
-            tokeniser->lookahead.type != TokenType::NEWLINE) {
-                AstNode *tuple = node_alloc(ast_arena);
+        if (parser->token_arr->current.type == TokenType::COMMA &&
+            parser->token_arr->lookahead.type != TokenType::NEWLINE) {
+                AstNode *tuple = node_alloc(parser->ast_arena);
                 tuple->type = AstNodeType::TUPLE;
                 tuple->tuple.children = child;
                 AstNode *next_child = tuple->tuple.children->adjacent_child;
 
-                while (tokeniser->last_returned.type == TokenType::COMMA) {
-                        eat_newlines(tokeniser);
+                while (parser->token_arr->current.type == TokenType::COMMA) {
                         // if there is more than one return value then make it a tuple
-                        tokeniser->next_token();
-                        next_child = parse_star_expression(tokeniser, ast_arena,
-                                                           scope,
-                                                           compiler_tables,
-                                                           symbol_table_arena);
+                        parser->token_arr->next_token();
+                        result = parse_star_expression(parser);
+
+                        if (result.error.type != ParseErrorType::NONE)
+                                return result;
+
+                        next_child = result.node;
                         next_child = next_child->adjacent_child;
-                        eat_newlines(tokeniser);
                 }
 
                 node->unary.child = tuple;
         }
 
-        return node;
+        return ParseResult{.node = node};
 }
 
-static AstNode *parse_function_def(Tokeniser *tokeniser, Arena *ast_arena,
-                                   SymbolTableEntry *scope,
-                                   CompilerTables *compiler_tables,
-                                   Arena *symbol_table_arena)
+static ParseResult parse_single_type_param(Parser *parser)
 {
-        AstNode *node = node_alloc(ast_arena);
-        node->token = tokeniser->last_returned;
+        AstNode *param = node_alloc(parser->ast_arena);
+        param->type = AstNodeType::TYPE_PARAM;
+        param->token = parser->token_arr->current;
+
+        if (parser->token_arr->current.type == TokenType::MULTIPLICATION) {
+                parser->token_arr->next_token();
+                param->type_param.star = true;
+                ParseResult result = parse_name(parser);
+                if (result.error.type != ParseErrorType::NONE)
+                        return result;
+                param->type_param.name = result.node;
+                return ParseResult{.node = param};
+        }
+
+        if (parser->token_arr->current.type == TokenType::EXPONENTIATION) {
+                parser->token_arr->next_token();
+                param->type_param.double_star = true;
+                ParseResult result = parse_name(parser);
+
+                if (result.error.type != ParseErrorType::NONE)
+                        return result;
+
+                param->type_param.name = result.node;
+                return ParseResult{.node = param};
+        }
+
+        ParseResult result = parse_name(parser);
+
+        if (result.error.type != ParseErrorType::NONE)
+                return result;
+
+        param->type_param.name = result.node;
+        if (parser->token_arr->current.type != TokenType::COLON) {
+                return ParseResult{.node = param};
+        }
+
+        parser->token_arr->next_token();
+        result = parse_expression(parser, 0);
+
+        if (result.error.type != ParseErrorType::NONE)
+                return result;
+
+        param->type_param.bound = result.node;
+
+        return ParseResult{.node = param};
+}
+
+static ParseResult parse_type_params(Parser *parser)
+{
+        if (parser->token_arr->current.type != TokenType::SQUARE_OPEN_PAREN) {
+                return ParseResult{};
+        }
+
+        parser->token_arr->next_token();
+        ParseResult result = parse_comma_seperated_func(
+                parser, parse_single_type_param);
+
+        if (result.error.type != ParseErrorType::NONE)
+                return result;
+
+        AstNode *params_head = result.node;
+
+        ParseResult assert_result = assert_token_and_print_debug(
+                parser, TokenType::SQUARE_CLOSED_PAREN,
+                "Error in type parameter sequence");
+
+        if (assert_result.error.type != ParseErrorType::NONE)
+                return assert_result;
+        parser->token_arr->next_token();
+
+        return ParseResult{.node = params_head};
+}
+
+static ParseResult parse_function_def(Parser *parser)
+{
+        AstNode *node = node_alloc(parser->ast_arena);
+        node->token = parser->token_arr->current;
         node->type = AstNodeType::FUNCTION_DEF;
         AstNodeFunctionDef *function_proper = &node->function_def;
 
-        assert_token_and_print_debug(TokenType::IDENTIFIER,
-                                     tokeniser->next_token(),
-                                     "\n Error parsing function definition");
+        parser->token_arr->next_token();
+        ParseResult assert_result = assert_token_and_print_debug(
+                parser, TokenType::IDENTIFIER,
+                "\n Error parsing function definition");
 
-        function_proper->name = parse_name(tokeniser, ast_arena);
+        if (assert_result.error.type != ParseErrorType::NONE)
+                return assert_result;
+
+        ParseResult result = parse_name(parser);
+
+        if (result.error.type != ParseErrorType::NONE)
+                return result;
+
+        function_proper->name = result.node;
         SymbolTableValue value = {};
         value.node = node;
+        value.static_type.type = TypeInfoType::FUNCTION;
 
-        assert_no_redefinition_and_insert_to_symbol_table(
-                symbol_table_arena, compiler_tables->function_table, scope,
-                &function_proper->name->token, &value);
+        SymbolTableEntry *entry =
+                assert_no_redefinition_and_insert_to_symbol_table(
+                        parser->symbol_table_arena, parser->tables->symbol_table, parser->scope,
+                        &function_proper->name->token, &value, true);
 
-        assert_token_and_print_debug(TokenType::OPEN_PAREN,
-                                     tokeniser->last_returned,
-                                     "\n Error parsing function definition");
-        tokeniser->next_token();
+        entry->value.static_type.function.custom_symbol = entry;
+        result = parse_type_params(parser);
 
-        //TODO make scope pushing and popping nicer
-        SymbolTableEntry *last_scope = scope;
-        scope = compiler_tables->function_table->lookup(
-                function_proper->name->token.value, scope);
+        function_proper->type_params = result.node;
 
-        function_proper->arguments = parse_function_def_arguments(
-                tokeniser, ast_arena, function_proper, scope, compiler_tables,
-                symbol_table_arena);
+        assert_result = assert_token_and_print_debug(
+                parser, TokenType::OPEN_PAREN,
+                "\n Error parsing function definition");
 
-        if (tokeniser->last_returned.type == TokenType::ARROW) {
-                tokeniser->next_token();
-                function_proper->return_type = parse_expression(
-                        tokeniser, ast_arena, scope, compiler_tables,
-                        symbol_table_arena, 0);
+        if (assert_result.error.type != ParseErrorType::NONE)
+                return assert_result;
+        parser->token_arr->next_token();
+
+        //TODO make parser->scope pushing and popping nicer
+        SymbolTableEntry *last_scope = parser->scope;
+        parser->scope = parser->tables->symbol_table->lookup(function_proper->name->token.value,
+                                             parser->scope);
+
+        result = parse_function_def_arguments(parser, function_proper);
+
+        if (result.error.type != ParseErrorType::NONE)
+                return result;
+
+        function_proper->arguments = result.node;
+
+        if (parser->token_arr->current.type == TokenType::ARROW) {
+                parser->token_arr->next_token();
+                result = parse_expression(parser, 0);
+
+                if (result.error.type != ParseErrorType::NONE)
+                        return result;
+
+                function_proper->return_type = result.node;
         }
 
-        assert_token_and_print_debug(TokenType::COLON, tokeniser->last_returned,
-                                     "Error parsing function definition");
+        assert_result = assert_token_and_print_debug(
+                parser, TokenType::COLON,
+                "Error parsing function definition");
 
-        tokeniser->next_token();
-        function_proper->block = parse_block(tokeniser, ast_arena, scope,
-                                             compiler_tables,
-                                             symbol_table_arena);
-        scope = last_scope;
+        if (assert_result.error.type != ParseErrorType::NONE)
+                return assert_result;
 
-        return node;
+        parser->token_arr->next_token();
+        result = parse_block(parser);
+
+        if (result.error.type != ParseErrorType::NONE)
+                return result;
+
+        function_proper->block = result.node;
+        parser->scope = last_scope;
+
+        return ParseResult{.node = node};
 }
 
-static AstNode *parse_dotted_name(Tokeniser *tokeniser, Arena *ast_arena,
-                                  SymbolTableEntry *scope,
-                                  CompilerTables *compiler_tables,
-                                  Arena *symbol_table_arena)
+static ParseResult parse_dotted_name(Parser *parser)
 {
-        AstNode *left = parse_name(tokeniser, ast_arena);
+        ParseResult result = parse_name(parser);
+
+        if (result.error.type != ParseErrorType::NONE)
+                return result;
+
+        AstNode *left = result.node;
         AstNode *right;
-        Token next_token = tokeniser->last_returned;
+        Token next_token = parser->token_arr->current;
         if (next_token.type == TokenType::DOT) {
-                tokeniser->next_token();
-                right = parse_dotted_name(tokeniser, ast_arena, scope,
-                                          compiler_tables, symbol_table_arena);
+                parser->token_arr->next_token();
+                result = parse_dotted_name(parser);
+
+                if (result.error.type != ParseErrorType::NONE)
+                        return result;
+
+                right = result.node;
         } else {
-                return left;
+                return ParseResult{.node = left};
         }
 
-        AstNode *binary = node_alloc(ast_arena);
+        AstNode *binary = node_alloc(parser->ast_arena);
         *binary = AstNode::create_binary(next_token, left, right);
-        return binary;
+        return ParseResult{.node = binary};
 }
 
-static AstNode *parse_dotted_as_name_import(Tokeniser *tokeniser,
-                                            Arena *ast_arena,
-                                            SymbolTableEntry *scope,
-                                            CompilerTables *compiler_tables,
-                                            Arena *symbol_table_arena)
+static ParseResult parse_dotted_as_name_import(Parser *parser)
 {
-        AstNode *import_target = node_alloc(ast_arena);
+        AstNode *import_target = node_alloc(parser->ast_arena);
         import_target->type = AstNodeType::IMPORT_TARGET;
-        import_target->token = tokeniser->last_returned;
+        import_target->token = parser->token_arr->current;
         AstNodeImportTarget *target_proper = &import_target->import_target;
-        target_proper->dotted_name = parse_dotted_name(tokeniser, ast_arena,
-                                                       scope, compiler_tables,
-                                                       symbol_table_arena);
+        ParseResult result = parse_dotted_name(parser);
 
-        if (tokeniser->last_returned.type == TokenType::AS) {
-                tokeniser->next_token();
-                target_proper->as = parse_name(tokeniser, ast_arena);
+        if (result.error.type != ParseErrorType::NONE)
+                return result;
+
+        target_proper->dotted_name = result.node;
+
+        parser->tables->import_list->list[parser->tables->import_list->list_index++] =
+                import_target;
+
+        SymbolTableValue val = {};
+        val.node = import_target;
+        if (parser->token_arr->current.type == TokenType::AS) {
+                parser->token_arr->next_token();
+                result = parse_name(parser);
+
+                if (result.error.type != ParseErrorType::NONE)
+                        return result;
+
+                target_proper->as = result.node;
+                parser->tables->symbol_table->insert(parser->symbol_table_arena,
+                                             target_proper->as->token.value,
+                                             parser->scope, &val);
         }
 
-        return import_target;
+        AstNode *names = target_proper->dotted_name;
+        while (names->type == AstNodeType::BINARYEXPR) {
+                parser->tables->symbol_table->insert(parser->symbol_table_arena,
+                                             names->binary.right->token.value,
+                                             parser->scope, &val);
+                parser->tables->symbol_table->insert(parser->symbol_table_arena,
+                                             names->binary.left->token.value,
+                                             parser->scope, &val);
+                // its a right leaning tree the left nodes will not have any children
+                names = target_proper->dotted_name->binary.right;
+        }
+
+        return ParseResult{.node = import_target};
 }
 
-static AstNode *parse_single_import_from_as_name(Tokeniser *tokeniser,
-                                                 Arena *ast_arena)
+static ParseResult parse_single_import_from_as_name(Parser *parser)
 {
-        AstNode *from_target = node_alloc(ast_arena);
+        AstNode *from_target = node_alloc(parser->ast_arena);
         from_target->type = AstNodeType::FROM_TARGET;
-        from_target->token = tokeniser->last_returned;
+        from_target->token = parser->token_arr->current;
         AstNodeFromImportTarget *target_proper = &from_target->from_target;
-        target_proper->name = parse_name(tokeniser, ast_arena);
+        ParseResult result = parse_name(parser);
 
-        if (tokeniser->last_returned.type == TokenType::AS) {
-                tokeniser->next_token();
-                target_proper->as = parse_name(tokeniser, ast_arena);
+        if (result.error.type != ParseErrorType::NONE)
+                return result;
+
+        target_proper->name = result.node;
+
+        if (parser->token_arr->current.type == TokenType::AS) {
+                parser->token_arr->next_token();
+                result = parse_name(parser);
+
+                if (result.error.type != ParseErrorType::NONE)
+                        return result;
+
+                target_proper->as = result.node;
         }
 
-        return from_target;
+        return ParseResult{.node = from_target};
 }
 
-static AstNode *parse_import_from_as_names(Tokeniser *tokeniser,
-                                           Arena *ast_arena)
+static ParseResult parse_import_from_as_names(Parser *parser)
 {
-        AstNode *head = parse_single_import_from_as_name(tokeniser, ast_arena);
+        ParseResult result = parse_single_import_from_as_name(parser);
+
+        if (result.error.type != ParseErrorType::NONE)
+                return result;
+
+        AstNode *head = result.node;
         AstNode *child = head;
-        while (tokeniser->last_returned.type == TokenType::COMMA) {
-                tokeniser->next_token();
-                child->adjacent_child =
-                        parse_single_import_from_as_name(tokeniser, ast_arena);
+        while (parser->token_arr->current.type == TokenType::COMMA) {
+                parser->token_arr->next_token();
+                result =
+                        parse_single_import_from_as_name(parser);
+
+                if (result.error.type != ParseErrorType::NONE)
+                        return result;
+
+                child->adjacent_child = result.node;
                 child = child->adjacent_child;
         }
 
-        tokeniser->next_token();
-        return head;
+        parser->token_arr->next_token();
+        return ParseResult{.node = head};
 }
 
-static AstNode *parse_with_item(Tokeniser *tokeniser, Arena *ast_arena,
-                                SymbolTableEntry *scope,
-                                CompilerTables *compiler_tables,
-                                Arena *symbol_table_arena)
+static ParseResult parse_with_item(Parser *parser)
 {
-        AstNode *with_item = node_alloc(ast_arena);
+        AstNode *with_item = node_alloc(parser->ast_arena);
         with_item->type = AstNodeType::WITH_ITEM;
-        with_item->token = tokeniser->last_returned;
-        with_item->with_item.expression =
-                parse_expression(tokeniser, ast_arena, scope, compiler_tables,
-                                 symbol_table_arena, 0);
+        with_item->token = parser->token_arr->current;
+        ParseResult result = parse_expression(parser, 0);
 
-        if (tokeniser->last_returned.type == TokenType::AS) {
-                tokeniser->next_token();
-                with_item->with_item.target = parse_single_star_target(
-                        tokeniser, ast_arena, scope, compiler_tables,
-                        symbol_table_arena);
+        if (result.error.type != ParseErrorType::NONE)
+                return result;
+
+        with_item->with_item.expression = result.node;
+
+        if (parser->token_arr->current.type == TokenType::AS) {
+                parser->token_arr->next_token();
+                result = parse_single_star_target(parser);
+
+                if (result.error.type != ParseErrorType::NONE)
+                        return result;
+
+                with_item->with_item.target = result.node;
         }
 
-        return with_item;
+        return ParseResult{.node = with_item};
 }
 
-static AstNode *parse_class_def(Tokeniser *tokeniser, Arena *ast_arena,
-                                SymbolTableEntry *scope,
-                                CompilerTables *compiler_tables,
-                                Arena *symbol_table_arena)
+static ParseResult parse_class_def(Parser *parser)
 {
-        AstNode *node = node_alloc(ast_arena);
-        node->token = tokeniser->last_returned;
+        AstNode *node = node_alloc(parser->ast_arena);
+        node->token = parser->token_arr->current;
         node->type = AstNodeType::CLASS_DEF;
         AstNodeClassDef *class_node = &node->class_def;
 
-        assert_token_and_print_debug(TokenType::IDENTIFIER,
-                                     tokeniser->next_token(),
-                                     "\n Error parsing class_node definition");
+        parser->token_arr->next_token();
+        ParseResult assert_result = assert_token_and_print_debug(
+                parser, TokenType::IDENTIFIER,
+                "\n Error parsing class_node definition");
 
-        class_node->name = parse_name(tokeniser, ast_arena);
+        if (assert_result.error.type != ParseErrorType::NONE)
+                return assert_result;
+
+        ParseResult result = parse_name(parser);
+
+        if (result.error.type != ParseErrorType::NONE)
+                return result;
+
+        class_node->name = result.node;
         SymbolTableValue value = {};
         value.static_type.type = TypeInfoType::CLASS;
         value.node = node;
 
         SymbolTableEntry *entry =
                 assert_no_redefinition_and_insert_to_symbol_table(
-                        symbol_table_arena, compiler_tables->class_table, scope,
-                        &class_node->name->token, &value);
+                        parser->symbol_table_arena, parser->tables->symbol_table, parser->scope,
+                        &class_node->name->token, &value, false);
 
         // cutsom type value referes to its own entry
         // so that when the symbol table is queried for typing it can update other custom types
         // with this pointer value back to the original declaration
-        entry->value.static_type.custom_symbol = entry;
+        entry->value.static_type.class_type.custom_symbol = entry;
 
-        if (tokeniser->last_returned.type == TokenType::OPEN_PAREN) {
-                tokeniser->next_token();
-                class_node->arguments = parse_function_call_arguments(
-                        tokeniser, ast_arena, scope, compiler_tables,
-                        symbol_table_arena);
+        result = parse_type_params(parser);
+
+        if (result.error.type != ParseErrorType::NONE)
+                return result;
+
+        class_node->type_params = result.node;
+
+        if (parser->token_arr->current.type == TokenType::OPEN_PAREN) {
+                parser->token_arr->next_token();
+                result = parse_function_call_arguments(parser);
+
+                if (result.error.type != ParseErrorType::NONE)
+                        return result;
+
+                class_node->arguments = result.node;
         }
 
-        assert_token_and_print_debug(TokenType::COLON, tokeniser->last_returned,
-                                     "Error parsing class_node definition");
-        tokeniser->next_token();
-        SymbolTableEntry *last_scope = scope;
-        scope = compiler_tables->class_table->lookup(
-                class_node->name->token.value, scope);
-        class_node->block = parse_block(tokeniser, ast_arena, scope,
-                                        compiler_tables, symbol_table_arena);
-        scope = last_scope;
+        assert_result = assert_token_and_print_debug(
+                parser, TokenType::COLON,
+                "Error parsing class_node definition");
 
-        return node;
+        if (assert_result.error.type != ParseErrorType::NONE)
+                return assert_result;
+        parser->token_arr->next_token();
+        SymbolTableEntry *last_scope = parser->scope;
+        parser->scope = parser->tables->symbol_table->lookup(class_node->name->token.value,
+                                             parser->scope);
+        result = parse_block(parser);
+
+        if (result.error.type != ParseErrorType::NONE)
+                return result;
+
+        class_node->block = result.node;
+        parser->scope = last_scope;
+
+        return ParseResult{.node = node};
 }
 
-static AstNode *parse_statement(Tokeniser *tokeniser, Arena *ast_arena,
-                                SymbolTableEntry *scope,
-                                CompilerTables *compiler_tables,
-                                Arena *symbol_table_arena)
+static ParseResult parse_statement(Parser *parser)
 {
-        Token current_token = tokeniser->last_returned;
+        Token current_token = parser->token_arr->current;
 
         if (current_token.type == TokenType::ENDFILE) {
-                return nullptr;
+                return parser_create_error_from_msg(parser, "Unexpected EOF");
         }
 
         // some nodes change this some nodes just return their own
         // TODO: unify this maybe??
-        AstNode *node = node_alloc(ast_arena);
+        AstNode *node = node_alloc(parser->ast_arena);
         node->token = current_token;
 
         switch (current_token.type) {
         case TokenType::IDENTIFIER: {
-                AstNode *left = parse_star_expressions(tokeniser, ast_arena,
-                                                       scope, compiler_tables,
-                                                       symbol_table_arena);
+                ParseResult result = parse_star_expressions(parser);
 
-                AstNode *assign = parse_assignment_or_declaration(
-                        tokeniser, ast_arena, scope, compiler_tables,
-                        symbol_table_arena, left);
+                if (result.error.type != ParseErrorType::NONE)
+                        return result;
+
+                AstNode *left = result.node;
+
+                result = parse_assignment_or_declaration(parser, left);
+
+                if (result.error.type != ParseErrorType::NONE)
+                        return result;
+
+                AstNode *assign = result.node;
                 AstNode **target = &left;
 
-                while (tokeniser->last_returned.type == TokenType::ASSIGN) {
-                        (*target)->adjacent_child = assign->assignment.expression;
+                while (parser->token_arr->current.type == TokenType::ASSIGN) {
+                        (*target)->adjacent_child =
+                                assign->assignment.expression;
 
-                        assign = parse_assignment_or_declaration(
-                                tokeniser, ast_arena, scope, compiler_tables,
-                                symbol_table_arena, left);
+                        result = parse_assignment_or_declaration(parser, left);
+
+                        if (result.error.type != ParseErrorType::NONE)
+                                return result;
+
+                        assign = result.node;
                 }
 
-                return assign;
+                return ParseResult{.node = assign};
 
         } break;
 
         case TokenType::MULTIPLICATION: {
-                AstNode *left = parse_star_targets(tokeniser, ast_arena, scope,
-                                                   compiler_tables,
-                                                   symbol_table_arena);
+                ParseResult result = parse_star_targets(parser);
 
-                if (tokeniser->last_returned.type == TokenType::COLON ||
-                    tokeniser->last_returned.type == TokenType::ASSIGN) {
-                        return parse_assignment_or_declaration(tokeniser, ast_arena, scope,
-                                                compiler_tables,
-                                                symbol_table_arena, left);
+                if (result.error.type != ParseErrorType::NONE)
+                        return result;
+
+                AstNode *left = result.node;
+
+                if (parser->token_arr->current.type == TokenType::COLON ||
+                    parser->token_arr->current.type == TokenType::ASSIGN) {
+                        return parse_assignment_or_declaration(parser, left);
                 }
 
-                return parse_increasing_precedence(tokeniser, ast_arena, left,
-                                                   scope, compiler_tables,
-                                                   symbol_table_arena, 0);
+                return parse_increasing_precedence(parser, left, 0);
         }
 
         case TokenType::IMPORT: {
                 node->type = AstNodeType::IMPORT;
-                tokeniser->next_token();
+                parser->token_arr->next_token();
                 // NOTE: must parse at least one
-                node->import.children = parse_comma_seperated_func(
-                        tokeniser, ast_arena, scope, compiler_tables,
-                        symbol_table_arena, parse_dotted_as_name_import);
+                ParseResult result = parse_comma_seperated_func(parser, parse_dotted_as_name_import);
+
+                if (result.error.type != ParseErrorType::NONE)
+                        return result;
+
+                node->import.children = result.node;
 
                 if (!node->import.children) {
-                        parser_exit_with_error_msg(
-                                "Import statement must have a target",
-                                tokeniser);
+                        return parser_create_error_from_msg(
+                                parser,
+                                "Import statement must have a target");
                 }
 
         } break;
@@ -1930,56 +2732,80 @@ static AstNode *parse_statement(Tokeniser *tokeniser, Arena *ast_arena,
         case TokenType::FROM: {
                 node->type = AstNodeType::FROM;
                 AstNodeFrom *from = &node->from;
-                tokeniser->next_token();
-                from->dotted_name = parse_dotted_name(tokeniser, ast_arena,
-                                                      scope, compiler_tables,
-                                                      symbol_table_arena);
+                parser->token_arr->next_token();
+                ParseResult result = parse_dotted_name(parser);
 
-                assert_token_and_print_debug(TokenType::IMPORT,
-                                             tokeniser->last_returned,
-                                             "Require an import after from");
-                tokeniser->next_token();
+                if (result.error.type != ParseErrorType::NONE)
+                        return result;
+
+                from->dotted_name = result.node;
+
+                ParseResult assert_result = assert_token_and_print_debug(
+                        parser, TokenType::IMPORT,
+                        "Require an import after from");
+
+                if (assert_result.error.type != ParseErrorType::NONE)
+                        return assert_result;
+                parser->token_arr->next_token();
 
                 bool paren = false;
-                if (tokeniser->last_returned.type ==
+                if (parser->token_arr->current.type ==
                     TokenType::MULTIPLICATION) {
                         from->is_wildcard = true;
-                        tokeniser->next_token();
+                        parser->token_arr->next_token();
 
-                        assert_token_and_print_debug(
-                                TokenType::NEWLINE, tokeniser->last_returned,
+                        assert_result = assert_token_and_print_debug(
+                                parser, TokenType::NEWLINE,
                                 "Cannot have a wildcard and other named targets");
 
-                        return node;
+                        if (assert_result.error.type != ParseErrorType::NONE)
+                                return assert_result;
+
+                        return ParseResult{.node = node};
                 }
 
-                if (tokeniser->last_returned.type == TokenType::OPEN_PAREN) {
-                        tokeniser->next_token();
+                if (parser->token_arr->current.type == TokenType::OPEN_PAREN) {
+                        parser->token_arr->next_token();
                         paren = true;
                 }
 
                 if (paren) {
-                        AstNode *child = parse_single_import_from_as_name(
-                                tokeniser, ast_arena);
+                        result = parse_single_import_from_as_name(parser);
+
+                        if (result.error.type != ParseErrorType::NONE)
+                                return result;
+
+                        AstNode *child = result.node;
                         from->targets = child;
-                        while (tokeniser->last_returned.type ==
+                        while (parser->token_arr->current.type ==
                                TokenType::COMMA) {
-                                tokeniser->next_token();
-                                eat_newlines(tokeniser);
-                                child->adjacent_child =
-                                        parse_single_import_from_as_name(
-                                                tokeniser, ast_arena);
+                                parser->token_arr->next_token();
+                                result =
+                                        parse_single_import_from_as_name(parser);
+
+                                if (result.error.type != ParseErrorType::NONE)
+                                        return result;
+
+                                child->adjacent_child = result.node;
                                 child = child->adjacent_child;
-                                eat_newlines(tokeniser);
                         }
 
-                        assert_token_and_print_debug(TokenType::CLOSED_PAREN,
-                                                     tokeniser->last_returned,
-                                                     "Mismatched Paren");
-                        tokeniser->next_token();
+                        assert_result =
+                                assert_token_and_print_debug(
+                                        parser,
+                                        TokenType::CLOSED_PAREN,
+                                        "Mismatched Paren");
+
+                        if (assert_result.error.type != ParseErrorType::NONE)
+                                return assert_result;
+                        parser->token_arr->next_token();
                 } else {
-                        from->targets = parse_import_from_as_names(tokeniser,
-                                                                   ast_arena);
+                        result = parse_import_from_as_names(parser);
+
+                        if (result.error.type != ParseErrorType::NONE)
+                                return result;
+
+                        from->targets = result.node;
                 }
 
         } break;
@@ -1987,373 +2813,590 @@ static AstNode *parse_statement(Tokeniser *tokeniser, Arena *ast_arena,
         case TokenType::AT: {
                 AstNode *head_decorator = nullptr;
                 AstNode **decorator = &head_decorator;
-                while (tokeniser->last_returned.type == TokenType::AT) {
-                        tokeniser->next_token();
-                        *decorator = parse_single_assignment_expression(
-                                tokeniser, ast_arena, scope, compiler_tables,
-                                symbol_table_arena);
-                        assert_token_and_print_debug(
-                                TokenType::NEWLINE, tokeniser->last_returned,
+                while (parser->token_arr->current.type == TokenType::AT) {
+                        parser->token_arr->next_token();
+                        ParseResult result = 
+                                        parse_single_assignment_expression(
+                                                parser);
+
+                        if (result.error.type != ParseErrorType::NONE)
+                                return result;
+
+                        *decorator = result.node;
+                        ParseResult assert_result = assert_token_and_print_debug(
+                                parser, TokenType::NEWLINE,
                                 "expected newline after decarator declaration");
 
+                        if (assert_result.error.type != ParseErrorType::NONE)
+                                return assert_result;
+
                         decorator = &((*decorator)->adjacent_child);
-                        tokeniser->next_token();
+                        parser->token_arr->next_token();
                 }
 
-                if (tokeniser->last_returned.type == TokenType::CLASS) {
-                        AstNode *class_def = parse_class_def(
-                                tokeniser, ast_arena, scope, compiler_tables,
-                                symbol_table_arena);
+                if (parser->token_arr->current.type == TokenType::CLASS) {
+                        ParseResult result =
+                                parse_class_def(parser);
+
+                        if (result.error.type != ParseErrorType::NONE)
+                                return result;
+
+                        AstNode *class_def = result.node;
                         class_def->class_def.decarators = head_decorator;
-                        return class_def;
+                        return ParseResult{.node = class_def};
                 }
 
-                if (tokeniser->last_returned.type == TokenType::DEF) {
-                        AstNode *funcion_def = parse_function_def(
-                                tokeniser, ast_arena, scope, compiler_tables,
-                                symbol_table_arena);
+                if (parser->token_arr->current.type == TokenType::DEF) {
+                        ParseResult result =
+                                parse_function_def(parser);
+
+                        if (result.error.type != ParseErrorType::NONE)
+                                return result;
+
+                        AstNode *funcion_def = result.node;
                         funcion_def->function_def.decarators = head_decorator;
-                        return funcion_def;
+                        return ParseResult{.node = funcion_def};
                 }
         }
 
         case TokenType::IF: {
-                tokeniser->next_token();
+                parser->token_arr->next_token();
                 node->type = AstNodeType::IF;
                 AstNodeIf *if_stmt = &node->if_stmt;
-                if_stmt->condition = parse_single_assignment_expression(
-                        tokeniser, ast_arena, scope, compiler_tables,
-                        symbol_table_arena);
-                assert_token_and_print_debug(TokenType::COLON,
-                                             tokeniser->last_returned,
-                                             "\n Error Parsing If Satement");
-                tokeniser->next_token();
+                ParseResult result = parse_single_assignment_expression(parser);
 
-                if_stmt->block = parse_block(tokeniser, ast_arena, scope,
-                                             compiler_tables,
-                                             symbol_table_arena);
-                if (!if_stmt->block) {
-                        printf("Failed to parse block inside if on line: %d\n",
-                               current_token.line);
-                        exit(1);
-                }
+                if (result.error.type != ParseErrorType::NONE)
+                        return result;
 
-                if_stmt->or_else = parse_elif(tokeniser, ast_arena, scope,
-                                              compiler_tables,
-                                              symbol_table_arena);
+                if_stmt->condition = result.node;
+                ParseResult assert_result = assert_token_and_print_debug(
+                        parser, TokenType::COLON,
+                        "\n Error Parsing If Satement");
+
+                if (assert_result.error.type != ParseErrorType::NONE)
+                        return assert_result;
+                parser->token_arr->next_token();
+
+                result = parse_block(parser);
+
+                if (result.error.type != ParseErrorType::NONE)
+                        return result;
+
+                if_stmt->block = result.node;
+
+                result = parse_elif(parser);
+
+                if (result.error.type != ParseErrorType::NONE)
+                        return result;
+
+                if_stmt->or_else = result.node;
 
         } break;
 
         case TokenType::WHILE: {
                 node->type = AstNodeType::WHILE;
                 AstNodeWhile *while_node = &node->while_loop;
-                tokeniser->next_token();
-                while_node->condition = parse_single_assignment_expression(
-                        tokeniser, ast_arena, scope, compiler_tables,
-                        symbol_table_arena);
+                parser->token_arr->next_token();
+                ParseResult result = parse_single_assignment_expression(parser);
 
-                assert_token_and_print_debug(TokenType::COLON,
-                                             tokeniser->last_returned,
-                                             "Error parsing while statment");
+                if (result.error.type != ParseErrorType::NONE)
+                        return result;
 
-                tokeniser->next_token();
-                while_node->block = parse_block(tokeniser, ast_arena, scope,
-                                                compiler_tables,
-                                                symbol_table_arena);
-                while_node->or_else = parse_else(tokeniser, ast_arena, scope,
-                                                 compiler_tables,
-                                                 symbol_table_arena);
+                while_node->condition = result.node;
+
+                ParseResult assert_result = assert_token_and_print_debug(
+                        parser, TokenType::COLON,
+                        "Error parsing while statment");
+
+                if (assert_result.error.type != ParseErrorType::NONE)
+                        return assert_result;
+
+                parser->token_arr->next_token();
+                result = parse_block(parser);
+
+                if (result.error.type != ParseErrorType::NONE)
+                        return result;
+
+                while_node->block = result.node;
+
+                result = parse_else(parser);
+
+                if (result.error.type != ParseErrorType::NONE)
+                        return result;
+
+                while_node->or_else = result.node;
         } break;
 
         //TODO: find out what the hell a star_target is in the python grammar
         case TokenType::FOR: {
                 node->type = AstNodeType::FOR_LOOP;
-                node->token = tokeniser->last_returned;
+                node->token = parser->token_arr->current;
                 AstNodeForLoop *for_node = &node->for_loop;
-                tokeniser->next_token();
+                parser->token_arr->next_token();
+                ParseResult result = parse_star_targets(parser);
 
-                for_node->targets = parse_star_targets(tokeniser, ast_arena,
-                                                       scope, compiler_tables,
-                                                       symbol_table_arena);
+                if (result.error.type != ParseErrorType::NONE)
+                        return result;
 
-                assert_token_and_print_debug(TokenType::IN_TOK,
-                                             tokeniser->last_returned,
-                                             "Error parsing for statment");
+                for_node->targets = result.node;
 
-                tokeniser->next_token();
-                for_node->expression = parse_star_expression(
-                        tokeniser, ast_arena, scope, compiler_tables,
-                        symbol_table_arena);
+                ParseResult assert_result = assert_token_and_print_debug(
+                        parser,
+                        TokenType::IN_TOK,
+                        "Error parsing for statment");
 
-                assert_token_and_print_debug(
-                        TokenType::COLON, tokeniser->last_returned,
+                if (assert_result.error.type != ParseErrorType::NONE)
+                        return assert_result;
+
+                parser->token_arr->next_token();
+                result = parse_star_expression(parser);
+
+                if (result.error.type != ParseErrorType::NONE)
+                        return result;
+
+                for_node->expression = result.node;
+
+                assert_result = assert_token_and_print_debug(
+                        parser, TokenType::COLON,
                         "expected colon after the end of for statement");
 
-                tokeniser->next_token();
-                for_node->block = parse_block(tokeniser, ast_arena, scope,
-                                              compiler_tables,
-                                              symbol_table_arena);
-                for_node->or_else = parse_else(tokeniser, ast_arena, scope,
-                                               compiler_tables,
-                                               symbol_table_arena);
+                if (assert_result.error.type != ParseErrorType::NONE)
+                        return assert_result;
+
+                parser->token_arr->next_token();
+                result = parse_block(parser);
+
+                if (result.error.type != ParseErrorType::NONE)
+                        return result;
+
+                for_node->block = result.node;
+
+                result = parse_else(parser);
+
+                if (result.error.type != ParseErrorType::NONE)
+                        return result;
+
+                for_node->or_else = result.node;
         } break;
 
+        //try block
         case TokenType::TRY: {
                 node->type = AstNodeType::TRY;
                 AstNodeTry *try_node = &node->try_node;
 
-                assert_token_and_print_debug(
-                        TokenType::COLON, tokeniser->next_token(),
+                parser->token_arr->next_token();
+                ParseResult assert_result = assert_token_and_print_debug(
+                        parser, TokenType::COLON,
                         "Expected colon at the end of try statment");
 
-                tokeniser->next_token();
-                try_node->block = parse_block(tokeniser, ast_arena, scope,
-                                              compiler_tables,
-                                              symbol_table_arena);
+                if (assert_result.error.type != ParseErrorType::NONE)
+                        return assert_result;
+
+                parser->token_arr->next_token();
+                ParseResult result = parse_block(parser);
+
+                if (result.error.type != ParseErrorType::NONE)
+                        return result;
+
+                try_node->block = result.node;
 
                 // Parse except handlers
                 AstNode **handler = &try_node->handlers;
-                while (tokeniser->last_returned.type != TokenType::ENDFILE) {
-                        Token except_token = tokeniser->last_returned;
+                while (parser->token_arr->current.type != TokenType::ENDFILE) {
+                        Token except_token = parser->token_arr->current;
 
                         if (!(except_token.type == TokenType::EXCEPT)) {
                                 break;
                         }
 
-                        AstNode *except = node_alloc(ast_arena);
+                        AstNode *except = node_alloc(parser->ast_arena);
                         except->token = except_token;
                         except->type = AstNodeType::EXCEPT;
                         AstNodeExcept *except_proper = &except->except;
 
-                        if (!(tokeniser->next_token().type ==
+                        if (!(parser->token_arr->next_token().type ==
                               TokenType::COLON)) {
-                                except_proper->expression = parse_expression(
-                                        tokeniser, ast_arena, scope,
-                                        compiler_tables, symbol_table_arena, 0);
+                                result = parse_expression(parser, 0);
 
-                                if (tokeniser->last_returned.type ==
+                                if (result.error.type != ParseErrorType::NONE)
+                                        return result;
+
+                                except_proper->expression = result.node;
+
+                                if (parser->token_arr->current.type ==
                                     TokenType::AS) {
-                                        tokeniser->next_token();
-                                        parse_name(tokeniser, ast_arena);
+                                        parser->token_arr->next_token();
+                                        parse_name(parser);
                                 }
 
-                                assert_token_and_print_debug(
-                                        TokenType::COLON,
-                                        tokeniser->last_returned,
+                                assert_result = assert_token_and_print_debug(
+                                        parser, TokenType::COLON,
                                         "\n Error Parsing except satement");
+
+                                if (assert_result.error.type != ParseErrorType::NONE)
+                                        return assert_result;
                         }
 
-                        tokeniser->next_token();
-                        except_proper->block = parse_block(tokeniser, ast_arena,
-                                                           scope,
-                                                           compiler_tables,
-                                                           symbol_table_arena);
+                        parser->token_arr->next_token();
+                        result = parse_block(parser);
+
+                        if (result.error.type != ParseErrorType::NONE)
+                                return result;
+
+                        except_proper->block = result.node;
 
                         *handler = except;
                         handler = &((*handler)->adjacent_child);
                 }
 
                 // parse else
-                try_node->or_else = parse_else(tokeniser, ast_arena, scope,
-                                               compiler_tables,
-                                               symbol_table_arena);
+                result = parse_else(parser);
+
+                if (result.error.type != ParseErrorType::NONE)
+                        return result;
+
+                try_node->or_else = result.node;
 
                 // parse finally statement
-                if (tokeniser->last_returned.type == TokenType::FINALLY) {
-                        assert_token_and_print_debug(
-                                TokenType::COLON, tokeniser->next_token(),
+                if (parser->token_arr->current.type == TokenType::FINALLY) {
+                        parser->token_arr->next_token();
+                        assert_result = assert_token_and_print_debug(
+                                parser, TokenType::COLON,
                                 "\n Error Parsing finally statement");
 
-                        tokeniser->next_token();
-                        try_node->finally = parse_block(tokeniser, ast_arena,
-                                                        scope, compiler_tables,
-                                                        symbol_table_arena);
+                        if (assert_result.error.type != ParseErrorType::NONE)
+                                return assert_result;
+
+                        parser->token_arr->next_token();
+                        result = parse_block(parser);
+
+                        if (result.error.type != ParseErrorType::NONE)
+                                return result;
+
+                        try_node->finally = result.node;
                 }
 
         } break;
 
         case TokenType::WITH: {
-                AstNode *with_node = node_alloc(ast_arena);
+                AstNode *with_node = node_alloc(parser->ast_arena);
                 with_node->type = AstNodeType::WITH;
-                with_node->token = tokeniser->last_returned;
-                tokeniser->next_token();
+                with_node->token = parser->token_arr->current;
+                parser->token_arr->next_token();
 
-                AstNode *child = parse_with_item(tokeniser, ast_arena, scope,
-                                                 compiler_tables,
-                                                 symbol_table_arena);
+                ParseResult result = parse_with_item(parser);
+
+                if (result.error.type != ParseErrorType::NONE)
+                        return result;
+
+                AstNode *child = result.node;
 
                 with_node->with_statement.items = child;
 
-                while (tokeniser->last_returned.type == TokenType::COMMA) {
-                        eat_newlines(tokeniser);
-                        child->adjacent_child = parse_with_item(
-                                tokeniser, ast_arena, scope, compiler_tables,
-                                symbol_table_arena);
+                while (parser->token_arr->current.type == TokenType::COMMA) {
+                        result = parse_with_item(parser);
+
+                        if (result.error.type != ParseErrorType::NONE)
+                                return result;
+
+                        child->adjacent_child = result.node;
                         child = child->adjacent_child;
-                        eat_newlines(tokeniser);
                 }
-                assert_token_and_print_debug(
-                        TokenType::COLON, tokeniser->last_returned,
+
+                ParseResult assert_result = assert_token_and_print_debug(
+                        parser, TokenType::COLON,
                         "expected colon after end of with statemnt");
 
-                tokeniser->next_token();
-                with_node->with_statement.block =
-                        parse_block(tokeniser, ast_arena, scope,
-                                    compiler_tables, symbol_table_arena);
+                if (assert_result.error.type != ParseErrorType::NONE)
+                        return assert_result;
 
-                return with_node;
+                parser->token_arr->next_token();
+                result = parse_block(parser);
+
+                if (result.error.type != ParseErrorType::NONE)
+                        return result;
+
+                with_node->with_statement.block = result.node;
+
+                return ParseResult{.node = with_node};
+        }
+
+        case TokenType::LAMBDA: {
+                AstNode *lambda = node_alloc(parser->ast_arena);
+                lambda->type = AstNodeType::LAMBDA;
+                lambda->token = parser->token_arr->current;
+                parser->token_arr->next_token();
+                ParseResult result = parse_lambda_arguments(parser, 
+                                                            &lambda->lambda);
+
+                if (result.error.type != ParseErrorType::NONE)
+                        return result;
+
+                lambda->lambda.arguments = result.node;
+
+                result =
+                        parse_expression(parser, 0);
+
+                if (result.error.type != ParseErrorType::NONE)
+                        return result;
+
+                lambda->lambda.expression = result.node;
+
+                return ParseResult{.node = lambda};
         }
 
         case TokenType::DEF: {
-                return parse_function_def(tokeniser, ast_arena, scope,
-                                          compiler_tables, symbol_table_arena);
+                return parse_function_def(parser);
         }
 
         case TokenType::CLASS: {
-                return parse_class_def(tokeniser, ast_arena, scope,
-                                       compiler_tables, symbol_table_arena);
+                return parse_class_def(parser);
         }
 
         case TokenType::RETURN: {
                 return parse_next_star_expressions_into_children(
-                        tokeniser, ast_arena, scope, compiler_tables,
-                        symbol_table_arena, tokeniser->last_returned);
+                        parser, parser->token_arr->current);
         }
 
         case TokenType::YIELD: {
-                if (tokeniser->lookahead.type != TokenType::FROM) {
+                if (parser->token_arr->lookahead.type != TokenType::FROM) {
                         return parse_next_star_expressions_into_children(
-                                tokeniser, ast_arena, scope, compiler_tables,
-                                symbol_table_arena, tokeniser->last_returned);
+                                parser, parser->token_arr->current);
                 }
 
-                tokeniser->next_token();
-                tokeniser->next_token();
+                parser->token_arr->next_token();
+                parser->token_arr->next_token();
 
                 node->type = AstNodeType::UNARY;
-                node->unary.child = parse_expression(tokeniser, ast_arena,
-                                                     scope, compiler_tables,
-                                                     symbol_table_arena, 0);
+                ParseResult result = parse_expression(parser, 0);
 
-                return node;
+                if (result.error.type != ParseErrorType::NONE)
+                        return result;
+
+                node->unary.child = result.node;
+
+                return ParseResult{.node = node};
         }
 
         case TokenType::RAISE: {
-                tokeniser->next_token();
+                parser->token_arr->next_token();
                 node->type = AstNodeType::RAISE;
-                if (tokeniser->lookahead.type == TokenType::NEWLINE) {
-                        return node;
+                if (parser->token_arr->lookahead.type == TokenType::NEWLINE) {
+                        return ParseResult{.node = node};
                 }
 
-                tokeniser->next_token();
-                node->raise.expression = parse_expression(
-                        tokeniser, ast_arena, scope, compiler_tables,
-                        symbol_table_arena, 0);
+                parser->token_arr->next_token();
+                ParseResult result =
+                        parse_expression(parser, 0);
 
-                if (tokeniser->last_returned.type == TokenType::FROM) {
-                        tokeniser->next_token();
-                        node->raise.from_expression = parse_expression(
-                                tokeniser, ast_arena, scope, compiler_tables,
-                                symbol_table_arena, 0);
+                if (result.error.type != ParseErrorType::NONE)
+                        return result;
+
+                node->raise.expression = result.node;
+
+                if (parser->token_arr->current.type == TokenType::FROM) {
+                        parser->token_arr->next_token();
+                        result =
+                                parse_expression(parser, 0);
+
+                        if (result.error.type != ParseErrorType::NONE)
+                                return result;
+
+
+                        node->raise.from_expression = result.node;
                 }
 
-                return node;
+                return ParseResult{.node = node};
         }
 
         case TokenType::DEL: {
-                tokeniser->next_token();
-                return parse_del_targets(tokeniser, ast_arena, scope,
-                                         compiler_tables, symbol_table_arena);
+                parser->token_arr->next_token();
+                return parse_del_targets(parser);
         }
 
         case TokenType::MATCH: {
                 node->type = AstNodeType::MATCH;
-                if (tokeniser->lookahead.type == TokenType::MULTIPLICATION) {
-                        node->match.subject =
-                                parse_single_assignment_star_expression(
-                                        tokeniser, ast_arena, scope,
-                                        compiler_tables, symbol_table_arena);
+                if (parser->token_arr->lookahead.type == TokenType::MULTIPLICATION) {
+                        ParseResult result =
+                                parse_single_assignment_star_expression(parser);
+
+                        if (result.error.type != ParseErrorType::NONE)
+                                return result;
+
+
+                        node->match.subject = result.node;
                         node->match.subject->type = AstNodeType::NARY;
 
-                        assert_token_and_print_debug(
-                                TokenType::COMMA, tokeniser->last_returned,
+                        ParseResult assert_result = assert_token_and_print_debug(
+                                parser, TokenType::COMMA,
                                 "expected comma after star expresssion in match");
 
-                        node->match.subject->adjacent_child =
-                                parse_assignment_star_expressions(
-                                        tokeniser, ast_arena, scope,
-                                        compiler_tables, symbol_table_arena,
-                                        true);
+                        if (assert_result.error.type != ParseErrorType::NONE)
+                                return assert_result;
+
+                        result = parse_assignment_star_expressions(parser, true);
+
+                        if (result.error.type != ParseErrorType::NONE)
+                                return result;
+
+
+                        node->match.subject->adjacent_child = result.node;
                 } else {
-                        node->match.subject =
-                                parse_single_assignment_expression(
-                                        tokeniser, ast_arena, scope,
-                                        compiler_tables, symbol_table_arena);
+                        ParseResult result =
+                                parse_single_assignment_expression(parser);
+
+                        if (result.error.type != ParseErrorType::NONE)
+                                return result;
+
+
+                        node->match.subject = result.node;
                 }
 
-                assert_token_and_print_debug(
-                        TokenType::COLON, tokeniser->last_returned,
+                ParseResult assert_result = assert_token_and_print_debug(
+                        parser, TokenType::COLON,
                         "Expected colon in match statement");
+
+                if (assert_result.error.type != ParseErrorType::NONE)
+                        return assert_result;
         }
 
         case TokenType::GLOBAL: {
                 return parse_list_of_names_and_return_modifier(
-                        tokeniser, ast_arena, current_token);
+                                parser, current_token);
         }
 
         case TokenType::NONLOCAL: {
                 return parse_list_of_names_and_return_modifier(
-                        tokeniser, ast_arena, current_token);
+                                parser, current_token);
         }
 
         case TokenType::PASS: {
-                return parse_single_token_into_node(tokeniser, ast_arena);
+                return ParseResult{ .node = parse_single_token_into_node(parser) };
         }
 
         case TokenType::CONTINUE: {
-                return parse_single_token_into_node(tokeniser, ast_arena);
+                return ParseResult{ .node = parse_single_token_into_node(parser) };
         }
 
         case TokenType::BREAK: {
-                return parse_single_token_into_node(tokeniser, ast_arena);
+                return ParseResult{ .node = parse_single_token_into_node(parser) };
         }
 
         default:
-                return parse_star_expression(tokeniser, ast_arena, scope,
-                                             compiler_tables,
-                                             symbol_table_arena);
+                ParseResult result = parse_star_expression(parser);
+
+                if (result.error.type != ParseErrorType::NONE)
+
+                        return result;
+
+
+                AstNode *expr = result.node;
+
+                if (expr->type == AstNodeType::TUPLE ||
+                    expr->type == AstNodeType::LIST) {
+                        return parse_assignment_or_declaration(parser, 
+                                                               expr);
+                }
+
+                return ParseResult{.node = expr};
         }
 
-        return node;
+        return ParseResult{.node = node};
 }
 
-static AstNode *parse_statements(Tokeniser *tokeniser, Arena *ast_arena,
-                                 SymbolTableEntry *scope,
-                                 CompilerTables *compiler_tables,
-                                 Arena *symbol_table_arena)
+static ParseResult parse_statements(Parser *parser)
 {
-        AstNode *file_node = node_alloc(ast_arena);
-        file_node->token = tokeniser->last_returned;
+        AstNode *file_node = node_alloc(parser->ast_arena);
+        file_node->token = parser->token_arr->current;
         file_node->type = AstNodeType::FILE;
         AstNode **child = &file_node->file.children;
 
-        while (tokeniser->last_returned.type != TokenType::ENDFILE) {
-                eat_newlines(tokeniser);
-                if (tokeniser->last_returned.type == TokenType::ENDFILE) {
+        while (parser->token_arr->current.type != TokenType::ENDFILE) {
+                while (parser->token_arr->current.type == TokenType::NEWLINE) {
+                        parser->token_arr->next_token();
+                }
+
+                if (parser->token_arr->current.type == TokenType::ENDFILE) {
                         break;
                 }
-                AstNode *statement = parse_statement(tokeniser, ast_arena,
-                                                     scope, compiler_tables,
-                                                     symbol_table_arena);
-                if (!statement) {
-                        printf("PARSING ERROR\n");
-                        //debug_print_parse_tree(&file_node, 0);
-                        break;
-                }
+
+                ParseResult result = parse_statement(parser);
+
+                handle_errors_and_assert_end(parser, &result);
+                AstNode *statement = result.node;
 
                 *child = statement;
                 child = &((*child)->adjacent_child);
         }
 
-        return file_node;
+        return ParseResult{.node = file_node};
+}
+
+bool ast_node_is_simple(AstNode node) {
+        switch(node.type) {
+        case AstNodeType::FUNCTION_DEF:
+                return false;
+        case AstNodeType::IF:
+                return false;
+        case AstNodeType::CLASS_DEF:
+                return false;
+        case AstNodeType::WITH:
+                return false;
+        case AstNodeType::FOR_LOOP:
+                return false;
+        case AstNodeType::TRY:
+                return false;
+        case AstNodeType::WHILE:
+                return false;
+        case AstNodeType::MATCH:
+                return false;
+        default:
+                return true;
+        }
+}
+
+void handle_errors_and_assert_end(Parser *parser, ParseResult *result)
+{
+        if (result->error.type != ParseErrorType::NONE) {
+                Token *error_token = result->error.token;
+                printf("File: %s, line: %d, col: %d, Syntax Error At token: '%s': %s\n",
+                       parser->token_arr->filename, error_token->line,
+                       error_token->column,
+                       TOKEN_STRINGS[(int)error_token->type],
+                       result->error.msg);
+
+                assert(result->node->type == AstNodeType::INVALID);
+                token_array_goto_end_of_statement(parser->token_arr);
+                return;
+        }
+
+        if (!result->node) {
+                return;
+        }
+
+        if (ast_node_is_simple(*result->node)) {
+                if (parser->token_arr->current.type != TokenType::NEWLINE &&
+                    parser->token_arr->current.type != TokenType::SEMICOLON) {
+                        printf("File: %s, line: %d, col: %d, Syntax Error: Statements must end in newline or be seperated semicolons\n",
+                               parser->token_arr->filename, parser->token_arr->current.line,
+                               parser->token_arr->current.column);
+
+                        token_array_goto_end_of_statement(parser->token_arr);
+
+                }
+        }
+}
+
+
+void token_array_goto_end_of_statement(TokenArray *token_array) {
+        while (true) {
+                if (token_array->current.type == TokenType::NEWLINE)
+                        break;
+                if (token_array->current.type == TokenType::SEMICOLON)
+                        break;
+                if (token_array->current.type == TokenType::ENDFILE)
+                        break;
+
+                token_array->next_token();
+        }
 }

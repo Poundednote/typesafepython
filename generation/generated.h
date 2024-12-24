@@ -1,44 +1,49 @@
 EnumMemberDefinition  AstNodeTypeEnumMembers[] =
 {
-{"FILE", 0},
-{"BINARYEXPR", 1},
-{"UNARY", 2},
-{"NARY", 3},
-{"TUPLE", 4},
-{"DICT", 5},
-{"DICTCOMP", 6},
-{"LIST", 7},
-{"LISTCOMP", 8},
-{"TERMINAL", 9},
-{"ASSIGNMENT", 10},
-{"BLOCK", 11},
-{"DECLARATION", 12},
-{"TYPE_ANNOTATION", 13},
-{"IF", 14},
-{"ELSE", 15},
-{"WHILE", 16},
-{"FOR_LOOP", 17},
-{"FOR_IF", 18},
-{"FUNCTION_DEF", 19},
-{"CLASS_DEF", 20},
-{"FUNCTION_CALL", 21},
-{"SUBSCRIPT", 22},
-{"ATTRIBUTE_REF", 23},
-{"TRY", 24},
-{"WITH", 25},
-{"WITH_ITEM", 26},
-{"EXCEPT", 27},
-{"STARRED", 28},
-{"KVPAIR", 29},
-{"IMPORT", 30},
-{"IMPORT_TARGET", 31},
-{"FROM", 32},
-{"FROM_TARGET", 33},
-{"UNION", 34},
-{"MATCH", 35},
-{"RAISE", 36},
-{"IF_EXPR", 37},
-{"GEN_EXPR", 38},
+{"FILE", 1},
+{"BINARYEXPR", 2},
+{"UNARY", 3},
+{"NARY", 4},
+{"TUPLE", 5},
+{"DICT", 6},
+{"DICTCOMP", 7},
+{"LIST", 8},
+{"LISTCOMP", 9},
+{"TERMINAL", 10},
+{"IDENTIFIER", 11},
+{"ASSIGNMENT", 12},
+{"BLOCK", 13},
+{"DECLARATION", 14},
+{"TYPE_ANNOTATION", 15},
+{"IF", 16},
+{"ELSE", 17},
+{"WHILE", 18},
+{"FOR_LOOP", 19},
+{"FOR_IF", 20},
+{"FUNCTION_DEF", 21},
+{"CLASS_DEF", 22},
+{"FUNCTION_CALL", 23},
+{"SUBSCRIPT", 24},
+{"SLICE", 25},
+{"ATTRIBUTE_REF", 26},
+{"TRY", 27},
+{"WITH", 28},
+{"WITH_ITEM", 29},
+{"EXCEPT", 30},
+{"STARRED", 31},
+{"KVPAIR", 32},
+{"IMPORT", 33},
+{"IMPORT_TARGET", 34},
+{"FROM", 35},
+{"FROM_TARGET", 36},
+{"UNION", 37},
+{"MATCH", 38},
+{"RAISE", 39},
+{"IF_EXPR", 40},
+{"GEN_EXPR", 41},
+{"LAMBDA", 42},
+{"TYPE_PARAM", 43},
+{"INVALID", 44},
 };
 StructMemberDefinition AstNodeUnaryStructMembers[] = 
 {
@@ -55,7 +60,7 @@ StructMemberDefinition AstNodeBinaryExprStructMembers[] =
 };
 StructMemberDefinition AstNodeAssignmentStructMembers[] = 
 {
-{TYPE_AstNode_PTR, "name", (uint64_t)&((AstNodeAssignment *)0)->name},
+{TYPE_AstNode_PTR, "left", (uint64_t)&((AstNodeAssignment *)0)->left},
 {TYPE_AstNode_PTR, "expression", (uint64_t)&((AstNodeAssignment *)0)->expression},
 };
 StructMemberDefinition AstNodeDeclarationStructMembers[] = 
@@ -109,10 +114,18 @@ StructMemberDefinition AstNodeWhileStructMembers[] =
 {TYPE_AstNode_PTR, "block", (uint64_t)&((AstNodeWhile *)0)->block},
 {TYPE_AstNode_PTR, "or_else", (uint64_t)&((AstNodeWhile *)0)->or_else},
 };
+StructMemberDefinition AstNodeTypeParamStructMembers[] = 
+{
+{TYPE_AstNode_PTR, "name", (uint64_t)&((AstNodeTypeParam *)0)->name},
+{TYPE_AstNode_PTR, "bound", (uint64_t)&((AstNodeTypeParam *)0)->bound},
+{TYPE_bool, "star", (uint64_t)&((AstNodeTypeParam *)0)->star},
+{TYPE_bool, "double_star", (uint64_t)&((AstNodeTypeParam *)0)->double_star},
+};
 StructMemberDefinition AstNodeClassDefStructMembers[] = 
 {
 {TYPE_AstNode_PTR, "decarators", (uint64_t)&((AstNodeClassDef *)0)->decarators},
 {TYPE_AstNode_PTR, "name", (uint64_t)&((AstNodeClassDef *)0)->name},
+{TYPE_AstNode_PTR, "type_params", (uint64_t)&((AstNodeClassDef *)0)->type_params},
 {TYPE_AstNode_PTR, "arguments", (uint64_t)&((AstNodeClassDef *)0)->arguments},
 {TYPE_AstNode_PTR, "block", (uint64_t)&((AstNodeClassDef *)0)->block},
 };
@@ -120,12 +133,21 @@ StructMemberDefinition AstNodeFunctionDefStructMembers[] =
 {
 {TYPE_AstNode_PTR, "decarators", (uint64_t)&((AstNodeFunctionDef *)0)->decarators},
 {TYPE_AstNode_PTR, "name", (uint64_t)&((AstNodeFunctionDef *)0)->name},
+{TYPE_AstNode_PTR, "type_params", (uint64_t)&((AstNodeFunctionDef *)0)->type_params},
 {TYPE_AstNode_PTR, "arguments", (uint64_t)&((AstNodeFunctionDef *)0)->arguments},
 {TYPE_AstNode_PTR, "block", (uint64_t)&((AstNodeFunctionDef *)0)->block},
 {TYPE_AstNode_PTR, "star", (uint64_t)&((AstNodeFunctionDef *)0)->star},
 {TYPE_AstNode_PTR, "double_star", (uint64_t)&((AstNodeFunctionDef *)0)->double_star},
 {TYPE_AstNode_PTR, "return_type", (uint64_t)&((AstNodeFunctionDef *)0)->return_type},
-{TYPE_bool, "has_star", (uint64_t)&((AstNodeFunctionDef *)0)->has_star},
+{TYPE_int, "star_pos", (uint64_t)&((AstNodeFunctionDef *)0)->star_pos},
+{TYPE_int, "slash_pos", (uint64_t)&((AstNodeFunctionDef *)0)->slash_pos},
+};
+StructMemberDefinition AstNodeLambdaDefStructMembers[] = 
+{
+{TYPE_AstNode_PTR, "arguments", (uint64_t)&((AstNodeLambdaDef *)0)->arguments},
+{TYPE_AstNode_PTR, "expression", (uint64_t)&((AstNodeLambdaDef *)0)->expression},
+{TYPE_AstNode_PTR, "star", (uint64_t)&((AstNodeLambdaDef *)0)->star},
+{TYPE_AstNode_PTR, "double_star", (uint64_t)&((AstNodeLambdaDef *)0)->double_star},
 };
 StructMemberDefinition AstNodeFunctionCallStructMembers[] = 
 {
@@ -145,9 +167,14 @@ StructMemberDefinition AstNodeKvPairStructMembers[] =
 StructMemberDefinition AstNodeSubscriptStructMembers[] = 
 {
 {TYPE_AstNode_PTR, "expression", (uint64_t)&((AstNodeSubscript *)0)->expression},
-{TYPE_AstNode_PTR, "start", (uint64_t)&((AstNodeSubscript *)0)->start},
-{TYPE_AstNode_PTR, "end", (uint64_t)&((AstNodeSubscript *)0)->end},
-{TYPE_AstNode_PTR, "step", (uint64_t)&((AstNodeSubscript *)0)->step},
+{TYPE_AstNode_PTR, "slices", (uint64_t)&((AstNodeSubscript *)0)->slices},
+};
+StructMemberDefinition AstNodeSliceStructMembers[] = 
+{
+{TYPE_AstNode_PTR, "start", (uint64_t)&((AstNodeSlice *)0)->start},
+{TYPE_AstNode_PTR, "end", (uint64_t)&((AstNodeSlice *)0)->end},
+{TYPE_AstNode_PTR, "step", (uint64_t)&((AstNodeSlice *)0)->step},
+{TYPE_AstNode_PTR, "named_expr", (uint64_t)&((AstNodeSlice *)0)->named_expr},
 };
 StructMemberDefinition AstNodeTryStructMembers[] = 
 {
@@ -235,98 +262,60 @@ StructMemberDefinition AstNodeDictStructMembers[] =
 {
 {TYPE_AstNode_PTR, "children", (uint64_t)&((AstNodeDict *)0)->children},
 };
-EnumMemberDefinition  TokenTypeEnumMembers[] =
+EnumMemberDefinition  ParseErrorTypeEnumMembers[] =
 {
-{"OR", 0},
-{"AND", 1},
-{"NOT", 2},
-{"EQ", 3},
-{"NE", 4},
-{"LE", 5},
-{"LT", 6},
-{"GE", 7},
-{"GT", 8},
-{"IS", 9},
-{"IN_TOK", 10},
-{"NOT_IN", 11},
-{"BWOR", 12},
-{"BWXOR", 13},
-{"BWAND", 14},
-{"SHIFTLEFT", 15},
-{"SHIFTRIGHT", 16},
-{"ADDITION", 17},
-{"SUBTRACTION", 18},
-{"MULTIPLICATION", 19},
-{"DIVISION", 20},
-{"FLOOR_DIV", 21},
-{"REMAINDER", 22},
-{"EXPONENTIATION", 23},
-{"DOT", 24},
-{"RETURN", 25},
-{"YIELD", 26},
-{"RAISE", 27},
-{"GLOBAL", 28},
-{"NONLOCAL", 29},
-{"IF", 30},
-{"ELIF", 31},
-{"ELSE", 32},
-{"DEF", 33},
-{"CLASS", 34},
-{"WHILE", 35},
-{"FOR", 36},
-{"TRY", 37},
-{"EXCEPT", 38},
-{"FINALLY", 39},
-{"WITH", 40},
-{"AS", 41},
-{"PASS", 42},
-{"BREAK", 43},
-{"CONTINUE", 44},
-{"DEL", 45},
-{"MATCH", 46},
-{"CASE", 47},
-{"IDENTIFIER", 48},
-{"INT_LIT", 49},
-{"FLOAT_LIT", 50},
-{"STRING_LIT", 51},
-{"FSTRING", 52},
-{"NONE", 53},
-{"BOOL_TRUE", 54},
-{"BOOL_FALSE", 55},
-{"OPEN_PAREN", 56},
-{"CLOSED_PAREN", 57},
-{"SQUARE_OPEN_PAREN", 58},
-{"SQUARE_CLOSED_PAREN", 59},
-{"CURLY_OPEN_PAREN", 60},
-{"CURLY_CLOSED_PAREN", 61},
-{"COMMA", 62},
-{"ASSIGN", 63},
-{"COLON", 64},
-{"COLON_EQUAL", 65},
-{"ARROW", 66},
-{"AT", 67},
-{"IMPORT", 68},
-{"FROM", 69},
-{"NEWLINE", 70},
-{"INDENT", 71},
-{"DEDENT", 72},
-{"FILE", 73},
-{"ENDFILE", 74},
+{"NONE", 0},
+{"INVALID_SYNTAX", 2},
+{"GENERAL", 3},
 };
 EnumMemberDefinition  TypeInfoTypeEnumMembers[] =
 {
-{"UNKNOWN", 0},
-{"ANY", 1},
-{"INTEGER", 2},
-{"FLOAT", 3},
-{"STRING", 4},
-{"BOOLEAN", 5},
+{"ANY", 0},
+{"INTEGER", 1},
+{"FLOAT", 2},
+{"STRING", 3},
+{"BOOLEAN", 4},
+{"COMPLEX", 5},
 {"NONE", 6},
-{"COMPLEX", 7},
+{"NOT_IMPLEMENTED", 7},
 {"LIST", 8},
 {"DICT", 9},
 {"KVPAIR", 10},
 {"UNION", 11},
 {"CLASS", 12},
-{"SIZE", 13},
+{"FUNCTION", 13},
+{"UNKNOWN", 14},
+{"SIZE", 15},
+};
+StructMemberDefinition TypeInfoListStructMembers[] = 
+{
+{TYPE_TypeInfo_PTR, "item_type", (uint64_t)&((TypeInfoList *)0)->item_type},
+};
+StructMemberDefinition TypeInfoParameterisedStructMembers[] = 
+{
+{TYPE_TypeInfo_PTR, "parameters", (uint64_t)&((TypeInfoParameterised *)0)->parameters},
+};
+StructMemberDefinition TypeInfoDictStructMembers[] = 
+{
+{TYPE_TypeInfo_PTR, "key_type", (uint64_t)&((TypeInfoDict *)0)->key_type},
+{TYPE_TypeInfo_PTR, "val_type", (uint64_t)&((TypeInfoDict *)0)->val_type},
+};
+StructMemberDefinition TypeInfoKVpairStructMembers[] = 
+{
+{TYPE_TypeInfo_PTR, "val_type", (uint64_t)&((TypeInfoKVpair *)0)->val_type},
+{TYPE_TypeInfo_PTR, "key_type", (uint64_t)&((TypeInfoKVpair *)0)->key_type},
+};
+StructMemberDefinition TypeInfoUnionStructMembers[] = 
+{
+{TYPE_TypeInfo_PTR, "left", (uint64_t)&((TypeInfoUnion *)0)->left},
+{TYPE_TypeInfo_PTR, "right", (uint64_t)&((TypeInfoUnion *)0)->right},
+};
+StructMemberDefinition TypeInfoClassStructMembers[] = 
+{
+{TYPE_SymbolTableEntry_PTR, "custom_symbol", (uint64_t)&((TypeInfoClass *)0)->custom_symbol},
+};
+StructMemberDefinition TypeInfoFunctionStructMembers[] = 
+{
+{TYPE_TypeInfo_PTR, "return_type", (uint64_t)&((TypeInfoFunction *)0)->return_type},
+{TYPE_SymbolTableEntry_PTR, "custom_symbol", (uint64_t)&((TypeInfoFunction *)0)->custom_symbol},
 };

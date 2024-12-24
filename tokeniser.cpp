@@ -5,11 +5,6 @@
 #include "tokeniser.h"
 #include "utils.h"
 
-//FIXME the person who wrote this tokeniser is a fucking retard and it
-//is filled with bad abstractions that dont fucking work the input stream
-//concept is just straight retarded its now hard to add anything to it because its such a
-//peice of shit. it was me I am the retard
-
 bool Token::is_binary_op()
 {
         switch (this->type) {
@@ -197,12 +192,46 @@ int Token::precedence()
         }
 }
 
+bool Token::is_augassign_op()
+{
+        switch (this->type) {
+        case TokenType::BWOR:
+                return true;
+
+        case TokenType::BWXOR:
+                return true;
+        case TokenType::BWAND:
+                return true;
+        case TokenType::SHIFTLEFT:
+                return true;
+        case TokenType::SHIFTRIGHT:
+                return true;
+        case TokenType::ADDITION:
+                return true;
+        case TokenType::SUBTRACTION:
+                return true;
+        case TokenType::MULTIPLICATION:
+                return true;
+        case TokenType::DIVISION:
+                return true;
+        case TokenType::FLOOR_DIV:
+                return true;
+        case TokenType::REMAINDER:
+                return true;
+        case TokenType::EXPONENTIATION:
+                return true;
+
+        default:
+                return false;
+        }
+}
 
 InputStream InputStream::create_from_file(const char *filename)
 {
         // initilise input stream
 
         InputStream input_stream = {};
+        input_stream.filename = filename;
         FILE *target_f;
 
         fopen_s(&target_f, filename, "rb");
@@ -275,15 +304,13 @@ char eat_whitespace(InputStream *stream)
         return stream->peek(0);
 }
 
-char eat_newline(InputStream *stream)
+char eat_newlines(InputStream *stream)
 {
-        while (stream->peek(0) == '\n' ||
-               stream->peek(0) == '\r') {
-               stream->next_char();
+        while (stream->peek(0) == '\n' || stream->peek(0) == '\r') {
+                stream->next_char();
         }
 
         return stream->peek(0);
-
 }
 
 bool match_string(const char *string, size_t string_size, InputStream *stream)
@@ -310,28 +337,36 @@ void parse_string_into_buffer(char c, InputStream *stream, std::string &buffer)
         }
 }
 
-bool match_string_and_parse_into_buffer(InputStream *stream, std::string &buffer)
+enum TokenType match_string_and_parse_into_buffer(InputStream *stream,
+                                                  std::string &buffer)
 {
-        if (match_string("f\"", 2, stream) || match_string("r\"", 2, stream) ||
-            match_string("u\"", 2, stream) || match_string("b\"", 2, stream) ||
-            match_string("fr\"", 3, stream) ||
-            match_string("rf\"", 3, stream) ||
-            match_string("br\"", 3, stream) ||
+        if (match_string("f\"", 2, stream) || match_string("fr\"", 3, stream) ||
+            match_string("rf\"", 3, stream)) {
+                parse_string_into_buffer('"', stream, buffer);
+                return TokenType::FSTRING;
+        }
+
+        if (match_string("f'", 2, stream) || match_string("fr'", 3, stream) ||
+            match_string("rf'", 3, stream)) {
+                parse_string_into_buffer('\'', stream, buffer);
+                return TokenType::FSTRING;
+        }
+
+        if (match_string("r\"", 2, stream) || match_string("u\"", 2, stream) ||
+            match_string("b\"", 2, stream) || match_string("br\"", 3, stream) ||
             match_string("rb\"", 3, stream) || match_string("\"", 1, stream)) {
                 parse_string_into_buffer('"', stream, buffer);
-                return true;
+                return TokenType::STRING_LIT;
         }
 
-        if (match_string("f'", 2, stream) || match_string("r'", 2, stream) ||
-            match_string("u'", 2, stream) || match_string("b'", 2, stream) ||
-            match_string("fr'", 3, stream) || match_string("rf'", 3, stream) ||
-            match_string("br'", 3, stream) || match_string("rb'", 3, stream) ||
-            match_string("'", 1, stream)) {
-                parse_string_into_buffer('\'', stream, buffer);
-                return true;
+        if (match_string("r'", 2, stream) || match_string("u'", 2, stream) ||
+            match_string("b'", 2, stream) || match_string("br'", 3, stream) ||
+            match_string("rb'", 3, stream) || match_string("'", 1, stream)) {
+               parse_string_into_buffer('\'', stream, buffer);
+               return TokenType::STRING_LIT;
         }
 
-        return false;
+        return TokenType::ENDFILE;
 }
 
 char check_for_comments(InputStream *stream)
@@ -366,69 +401,55 @@ char check_for_comments(InputStream *stream)
         return current;
 }
 
-Tokeniser Tokeniser::init(InputStream *stream)
-{
-        Tokeniser tokeniser = {};
-        tokeniser.stream = stream;
-        tokeniser.last_returned = tokeniser.get_next_lookahead();
-        tokeniser.current_indent_level = tokeniser.lookahead_indent_level;
-        tokeniser.lookahead = tokeniser.last_returned;
-        tokeniser.lookahead = tokeniser.get_next_lookahead();
-
-        return tokeniser;
-}
-
-Token Tokeniser::next_token()
-{
-        this->last_returned = this->lookahead;
-        this->current_indent_level = this->lookahead_indent_level;
-        this->lookahead = this->get_next_lookahead();
-        return last_returned;
-};
-
-Token Tokeniser::get_next_lookahead()
+Token tokeniser_token_from_stream(Tokeniser *tokeniser, InputStream *stream)
 {
         std::string buffer = "";
-        char current = this->stream->peek(0);
+        char current = stream->peek(0);
 
         Token token = {};
-
-        // TODO there may or may not be a better way of doing this indentation
-        // Check for dedents after newline
-        if (this->lookahead.type == TokenType::NEWLINE && !paren_count) {
-                this->lookahead_indent_level = 0;
+        if (tokeniser->last_returned.type == TokenType::NEWLINE &&
+            !tokeniser->paren_count) {
+                tokeniser->indent_level = 0;
                 int spaces = 0;
                 for (; current && current == ' ';
-                     current = this->stream->next_char()) {
+                     current = stream->next_char()) {
                         ++spaces;
 
                         if (spaces == 4) {
-                                ++this->lookahead_indent_level;
+                                ++tokeniser->indent_level;
                                 spaces = 0;
                         }
                 }
         }
 
+        current = eat_whitespace(stream);
+        current = check_for_comments(stream);
 
-        current = eat_whitespace(this->stream);
-        current = check_for_comments(this->stream);
+        token.line = stream->line;
+        token.column = stream->col;
+        token.indent_level = tokeniser->indent_level;
 
-        token.line = this->stream->line;
-        token.column = this->stream->col;
+        enum TokenType string_type =
+                match_string_and_parse_into_buffer(stream, buffer);
 
-        if (match_string_and_parse_into_buffer(stream, buffer)) {
+        if (string_type != TokenType::ENDFILE) {
                 token.value = buffer;
-                token.type = TokenType::STRING_LIT;
+                token.type = string_type;
                 stream->next_char();
                 eat_whitespace(stream);
-                while (this->stream->peek(0) == '\n' && this->paren_count) {
-                        this->stream->next_char();
-                        eat_whitespace(this->stream);
-                        check_for_comments(this->stream);
-                        if (match_string_and_parse_into_buffer(stream, buffer))
-                                this->stream->next_char();
+                while (stream->peek(0) == '\n' && tokeniser->paren_count) {
+                        stream->next_char();
+                        eat_whitespace(stream);
+                        check_for_comments(stream);
+                        // FIXME: this isn't correct probably a
+                        // weird edge case with the multiline string
+                        enum TokenType mulitline_string =
+                                match_string_and_parse_into_buffer(stream,
+                                                                   buffer);
+                        if (string_type != TokenType::ENDFILE)
+                                stream->next_char();
                 }
-                eat_whitespace(this->stream);
+                eat_whitespace(stream);
 
                 token.value = buffer;
                 return token;
@@ -437,8 +458,8 @@ Token Tokeniser::get_next_lookahead()
         // KEYWORDS
         if (std::isalpha(current) || current == '_') {
                 buffer.push_back(current);
-                for (char alpha_char = this->stream->next_char(); alpha_char;
-                     alpha_char = this->stream->next_char()) {
+                for (char alpha_char = stream->next_char(); alpha_char;
+                     alpha_char = stream->next_char()) {
                         if (!(std::isalnum(alpha_char) || alpha_char == '_')) {
                                 break;
                         }
@@ -457,9 +478,9 @@ Token Tokeniser::get_next_lookahead()
                         token.type = TokenType::AND;
                 } else if (buffer == "not") {
                         token.type = TokenType::NOT;
-                        eat_whitespace(this->stream);
+                        eat_whitespace(stream);
                         buffer.clear();
-                        if(match_string("in", sizeof("in") - 1, this->stream))
+                        if(match_string("in", sizeof("in") - 1, stream))
                                 token.type = TokenType::NOT_IN;
 
                 } else if (buffer == "True") {
@@ -515,9 +536,11 @@ Token Tokeniser::get_next_lookahead()
                 } else if (buffer == "match") {
                         token.type = TokenType::MATCH;
                 } else if (buffer == "case") {
-                        token.type = TokenType::MATCH;
+                        token.type = TokenType::CASE;
                 } else if (buffer == "from") {
                         token.type = TokenType::FROM;
+                } else if (buffer == "lambda") {
+                        token.type = TokenType::LAMBDA;
                 }
 
                 else {
@@ -533,10 +556,10 @@ Token Tokeniser::get_next_lookahead()
                 bool decimal = false;
 
                 if (current == '0') {
-                        char next = this->stream->peek(1);
+                        char next = stream->peek(1);
                         if (next == 'x' || next == 'o' || next == 'b') {
-                                this->stream->next_char();
-                                this->stream->next_char();
+                                stream->next_char();
+                                stream->next_char();
                         } else {
                                 buffer.push_back(current);
                         }
@@ -544,8 +567,8 @@ Token Tokeniser::get_next_lookahead()
                         buffer.push_back(current);
                 }
 
-                for (char digit_char = this->stream->next_char(); digit_char;
-                     digit_char = this->stream->next_char()) {
+                for (char digit_char = stream->next_char(); digit_char;
+                     digit_char = stream->next_char()) {
                         if (digit_char == '.') {
                                 decimal = true;
                         }
@@ -570,27 +593,27 @@ Token Tokeniser::get_next_lookahead()
         switch (current) {
         case '(': {
                 token.type = TokenType::OPEN_PAREN;
-                this->paren_count++;
+                tokeniser->paren_count++;
         } break;
         case ')': {
                 token.type = TokenType::CLOSED_PAREN;
-                this->paren_count--;
+                tokeniser->paren_count--;
         } break;
         case '[': {
                 token.type = TokenType::SQUARE_OPEN_PAREN;
-                this->paren_count++;
+                tokeniser->paren_count++;
         } break;
         case ']': {
                 token.type = TokenType::SQUARE_CLOSED_PAREN;
-                this->paren_count--;
+                tokeniser->paren_count--;
         } break;
         case '{': {
                 token.type = TokenType::CURLY_OPEN_PAREN;
-                this->paren_count++;
+                tokeniser->paren_count++;
         } break;
         case '}': {
                 token.type = TokenType::CURLY_CLOSED_PAREN;
-                this->paren_count--;
+                tokeniser->paren_count--;
         } break;
         case ',': {
                 token.type = TokenType::COMMA;
@@ -599,9 +622,9 @@ Token Tokeniser::get_next_lookahead()
                 token.type = TokenType::DOT;
         } break;
         case ':': {
-                if (this->stream->peek(1) == '=') {
-                        this->stream->next_char();
-                        this->stream->next_char();
+                if (stream->peek(1) == '=') {
+                        stream->next_char();
+                        stream->next_char();
                         token.type = TokenType::COLON_EQUAL;
                 } else {
                         token.type = TokenType::COLON;
@@ -627,9 +650,9 @@ Token Tokeniser::get_next_lookahead()
         } break;
 
         case '\n': {
-                if (paren_count) {
+                if (tokeniser->paren_count) {
                         stream->next_char();
-                        return get_next_lookahead(); // skip newline
+                        return tokeniser_get_next_token(tokeniser, stream); // skip newline
                 }
 
                 token.type = TokenType::NEWLINE;
@@ -642,17 +665,17 @@ Token Tokeniser::get_next_lookahead()
         } break;
 
         case '!': {
-                if (this->stream->peek(1) == '=') {
+                if (stream->peek(1) == '=') {
                         token.type = TokenType::NE;
-                        this->stream->next_char();
+                        stream->next_char();
                 }
 
         } break;
 
         case '=': {
-                if (this->stream->peek(1) == '=') {
+                if (stream->peek(1) == '=') {
                         token.type = TokenType::EQ;
-                        this->stream->next_char();
+                        stream->next_char();
                         break;
                 }
 
@@ -660,9 +683,9 @@ Token Tokeniser::get_next_lookahead()
         } break;
 
         case '*': {
-                if (this->stream->peek(1) == '*') {
+                if (stream->peek(1) == '*') {
                         token.type = TokenType::EXPONENTIATION;
-                        this->stream->next_char();
+                        stream->next_char();
                         break;
                 }
 
@@ -670,33 +693,33 @@ Token Tokeniser::get_next_lookahead()
         } break;
 
         case '/': {
-                if (this->stream->peek(1) == '/') {
+                if (stream->peek(1) == '/') {
                         token.type = TokenType::FLOOR_DIV;
-                        this->stream->next_char();
+                        stream->next_char();
                         break;
                 }
                 token.type = TokenType::DIVISION;
         } break;
 
         case '-': {
-                if (this->stream->peek(1) == '>') {
+                if (stream->peek(1) == '>') {
                         token.type = TokenType::ARROW;
-                        this->stream->next_char();
+                        stream->next_char();
                         break;
                 }
                 token.type = TokenType::SUBTRACTION;
         } break;
 
         case '<': {
-                if (this->stream->peek(1) == '<') {
+                if (stream->peek(1) == '<') {
                         token.type = TokenType::SHIFTLEFT;
-                        this->stream->next_char();
+                        stream->next_char();
                         break;
                 }
 
-                if (this->stream->peek(1) == '=') {
+                if (stream->peek(1) == '=') {
                         token.type = TokenType::LE;
-                        this->stream->next_char();
+                        stream->next_char();
                         break;
                 }
 
@@ -705,27 +728,83 @@ Token Tokeniser::get_next_lookahead()
         } break;
 
         case '>': {
-                if (this->stream->peek(1) == '>') {
+                if (stream->peek(1) == '>') {
                         token.type = TokenType::SHIFTRIGHT;
-                        this->stream->next_char();
+                        stream->next_char();
                         break;
                 }
 
-                else if (this->stream->peek(1) == '=') {
+                else if (stream->peek(1) == '=') {
                         token.type = TokenType::GE;
-                        this->stream->next_char();
+                        stream->next_char();
                         break;
                 }
 
                 token.type = TokenType::GT;
         } break;
 
+        case ';': {
+                token.type = TokenType::SEMICOLON;
+        } break;
+
         case 0: {
                 token.type = TokenType::ENDFILE;
-        }
+        } break;
 
         }
 
-        this->stream->next_char();
+        stream->next_char();
         return token;
+}
+
+Token tokeniser_get_next_token(Tokeniser *tokeniser, InputStream *stream)
+{
+        tokeniser->last_returned =
+                tokeniser_token_from_stream(tokeniser, stream);
+        return tokeniser->last_returned;
+}
+
+TokenArray token_array_create_from_input_stream(Arena *arena, InputStream *stream)
+{
+        Tokeniser tokeniser = {};
+        TokenArray token_array = {};
+        Token token = tokeniser_get_next_token(&tokeniser, stream);
+        token_array.tokens = (Token *)arena->alloc(sizeof(Token));
+        token_array.filename = stream->filename;
+
+        Token *curr_token = token_array.tokens;
+        while (token.type != TokenType::ENDFILE) {
+                new (curr_token) Token();
+                *curr_token = token;
+                token = tokeniser_get_next_token(&tokeniser, stream);
+                ++token_array.size;
+
+                curr_token = (Token *)arena->alloc(sizeof(*curr_token));
+        }
+
+        new (curr_token) Token();
+        ++token_array.size;
+        *curr_token = token;
+
+        token_array.current = token_array.tokens[0];
+        token_array.lookahead = token_array.tokens[1];
+
+        return token_array;
+}
+
+Token TokenArray::next_token()
+{
+        if (this->position == this->size - 2) {
+                this->current = this->lookahead;
+                ++position;
+                return this->current;
+
+        } else if (this->position == this->size - 1) {
+                return this->current;
+        }
+
+        this->current = this->lookahead;
+        this->lookahead = this->tokens[++this->position + 1];
+
+        return this->current;
 }

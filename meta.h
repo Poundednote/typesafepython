@@ -8,12 +8,15 @@ enum MetaType {
         TYPE_float,
         TYPE_bool,
         TYPE_AstNode_PTR,
+        TYPE_TypeInfo_PTR,
+        TYPE_TypeInfoType,
+        TYPE_SymbolTableEntry_PTR,
 };
 
 struct StructMemberDefinition {
         MetaType type;
         const char *name;
-        uint32_t offset;
+        uint64_t offset;
 };
 
 struct EnumMemberDefinition {

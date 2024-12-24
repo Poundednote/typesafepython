@@ -15,6 +15,7 @@
 #define MEGABYTES(n) ((KILOBYTES(n)) * 1024)
 #define GIGABYTES(n) ((MEGABYTES(n)) * 1024)
 
+struct Token;
 struct Arena {
         void *memory = nullptr;
         size_t capacity = 0;
@@ -22,18 +23,18 @@ struct Arena {
 
         static inline Arena init(size_t reserve);
         void *alloc(size_t size);
+        void clear();
         void destroy()
         {
                 VirtualFree(this->memory, 0, MEM_RELEASE);
         }
 };
 
-struct SubArena : public Arena {
-        Arena *backing_arena;
-
-        static inline SubArena init(Arena *backing_arena, size_t capacity);
-        inline void *alloc(size_t capacity);
-        inline void destroy();
+struct ReadFileResult {
+        char *contents;
+        size_t filesize;
 };
+
+char *read_entire_file();
 
 #endif // UTILS_H_

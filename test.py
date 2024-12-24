@@ -1,15 +1,14 @@
-from typing import List
-
 a: str = "new_drank"
 b: str = "string"
 c: str = ""
-d: List[int | str | float | bool] = [1, 2, 3, 4, "hello", 1.0, "string"]
+d: list[int | str | float | bool] = [1, 2, 3, 4, "hello", 1.0, "string"]
 
 class Foo:
     baz: str = "hello"
 
-    def bar(self: int) -> int:
-        return 1
+class Bar(Foo):
+    def __getitem__(array):
+        return array
 
 def first() -> str:
     while 1:
@@ -23,9 +22,19 @@ def first() -> str:
 
 def second() -> int:
     foo: Foo
-    return 1
+    return 1 def
 
-def cawk(a: int) -> int:
-    return a + 1
+def cawk(a: int | str | float | bool) -> None:
+    return
+
+def inherit(foo: int):
+    return foo.baz
 
 cawk(d[1])
+list[int]
+bar: Bar = Bar()
+inherit(bar)
+(-5 + 2) * 3
+3 + :
+a =
+15 + 3

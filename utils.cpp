@@ -48,30 +48,34 @@ void *Arena::alloc(size_t size)
         return (void *)new_base;
 };
 
-inline SubArena SubArena::init(Arena *backing_arena, size_t size)
+void Arena::clear()
 {
-        SubArena sub_arena = {};
-        sub_arena.backing_arena = backing_arena;
-        sub_arena.memory = backing_arena->alloc(size);
-        sub_arena.capacity = size;
-        sub_arena.offset = 0;
-
-        return sub_arena;
+        this->offset = 0;
 }
 
-inline void *SubArena::alloc(size_t size)
+ReadFileResult read_entire_file(const char *filename)
 {
-        char *new_base = ((char *)this->memory + this->offset);
-        if (this->offset + size >= this->capacity) {
-                fprintf_s(stderr, "SubArena reached maximum capcity");
+        ReadFileResult result = {};
+        FILE *target_f;
+        fopen_s(&target_f, filename, "rb");
+        if (!target_f) {
+                return result;
         }
 
-        assert(this->offset < this->capacity);
-        this->offset += size;
-        return (void *)new_base;
-}
+        // compute filesize
+        fseek(target_f, 0, SEEK_END);
+        result.filesize = ftell(target_f);
+        fseek(target_f, 0, SEEK_SET);
+        result.contents = new char[result.filesize + 1];
+        if (result.contents == nullptr) {
+                // this shouldn't have happend
+                exit(1);
+        }
 
-inline void SubArena::destroy()
-{
-        this->backing_arena->offset -= this->capacity;
+        // read contents into file
+        fread_s(result.contents, result.filesize, 1, result.filesize,
+                target_f);
+        result.contents[result.filesize] = 0; // for safe
+        fclose(target_f);
+        return result;
 }
